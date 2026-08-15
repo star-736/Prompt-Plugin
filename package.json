@@ -1,11 +1,11 @@
 {
-  "name": "prompt-vault-edge-extension",
+  "name": "futurecontext-edge-extension",
   "private": true,
   "type": "module",
   "version": "0.1.0",
-  "description": "Offline password-protected prompt vault for Edge and Chrome",
+  "description": "Local-first AI asset library for Edge and Chrome",
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "check": "node --check popup.js && node --check vault.js && node --check test/vault.test.mjs"
+    "check": "node --check popup.js && node --check store.js && node --check test/store.test.mjs"
   }
 }

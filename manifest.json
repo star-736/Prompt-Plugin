@@ -1,12 +1,17 @@
 {
   "manifest_version": 3,
-  "name": "Prompt Vault",
+  "name": "FutureContext",
   "version": "0.1.0",
-  "description": "An offline, password-protected vault for your image and video prompts.",
+  "description": "A local-first library for reusable AI prompts, Skills, and private AIGC ideas.",
   "permissions": ["storage"],
+  "icons": {
+    "16": "icons/futurecontext-c.png",
+    "32": "icons/futurecontext-c.png",
+    "48": "icons/futurecontext-c.png",
+    "128": "icons/futurecontext-c.png"
+  },
   "action": {
-    "default_title": "Prompt Vault",
+    "default_title": "FutureContext",
     "default_popup": "popup.html"
   }
 }
-
