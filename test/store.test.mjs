@@ -3,18 +3,25 @@ import test from 'node:test';
 import { webcrypto } from 'node:crypto';
 import {
   assetsFor,
+  applyAiAssetResult,
+  applyAiCategoryGroups,
   createBackup,
   createCategory,
   createEmptyDatabase,
+  decryptProviderKey,
   deleteCategory,
+  displayTitle,
+  encryptProviderKey,
   getDraft,
   hasPrivacyLock,
   mergeBackup,
   moveAigcAsset,
   parseSkillMetadata,
   saveAsset,
+  saveGithubSkillAsset,
   saveDraft,
   setPrivacyPassword,
+  updateAiSettings,
   verifyPrivacyPassword
 } from '../store.js';
 
@@ -39,9 +46,11 @@ test('resetting the privacy lock never removes private AIGC content', async () =
   assert.equal(await verifyPrivacyPassword(reset, 'abcdef', webcrypto), true);
 });
 
-test('asset validation enforces the three first-release asset shapes', () => {
+test('asset validation accepts a title-less generic Prompt and preserves Skill validation', () => {
   let database = createEmptyDatabase();
-  assert.throws(() => saveAsset(database, { type: 'generic', title: '', content: 'body' }), /标题/);
+  const untitled = saveAsset(database, { type: 'generic', title: '', content: 'body' }, { now: 1, id: 'generic-untitled' });
+  assert.equal(displayTitle(untitled.asset), 'body');
+  database = untitled.database;
   assert.throws(() => saveAsset(database, { type: 'skill', content: '# no frontmatter' }), /YAML/);
   const savedSkill = saveAsset(database, { type: 'skill', content: skill }, { now: 1, id: 'skill-1' });
   assert.equal(savedSkill.asset.title, 'Email reviewer');
@@ -49,6 +58,59 @@ test('asset validation enforces the three first-release asset shapes', () => {
   const savedAigc = saveAsset(savedSkill.database, { type: 'aigc', privacy: 'private', content: 'silver robot in a misty forest', categoryId: 'ignored' }, { now: 2, id: 'aigc-1' });
   assert.equal(savedAigc.asset.categoryId, null);
   assert.throws(() => saveAsset(savedAigc.database, { type: 'skill', privacy: 'private', content: skill }), /只有 AIGC/);
+});
+
+test('provider keys are encrypted and become inaccessible after privacy password reset', async () => {
+  const secret = await encryptProviderKey('123456', 'sk-secret-value', webcrypto);
+  assert.equal(JSON.stringify(secret).includes('sk-secret-value'), false);
+  assert.equal(await decryptProviderKey('123456', secret, webcrypto), 'sk-secret-value');
+  await assert.rejects(() => decryptProviderKey('wrong-password', secret, webcrypto), /无法解锁/);
+  const database = await setPrivacyPassword(createEmptyDatabase(), '123456', webcrypto);
+  const reset = await setPrivacyPassword({ ...database, ai: { ...database.ai, providers: [{ id: 'p1', secret }] } }, 'abcdef', webcrypto);
+  assert.equal(reset.ai.providers.length, 0);
+});
+
+test('AI only queues saved generic and Skill content after background AI is enabled', () => {
+  let database = updateAiSettings(createEmptyDatabase(), { enabled: true });
+  database = saveAsset(database, { type: 'generic', content: 'write a polite email' }, { now: 1, id: 'prompt-1' }).database;
+  database = saveAsset(database, { type: 'aigc', content: 'a moonlit portrait' }, { now: 2, id: 'aigc-1' }).database;
+  assert.deepEqual(database.ai.queue.map((item) => item.assetId), ['prompt-1']);
+  database = saveAsset(database, { id: 'prompt-1', type: 'generic', content: 'write a polite email' }, { now: 3 }).database;
+  assert.equal(database.ai.queue.length, 1);
+});
+
+test('AI never overwrites human title or category choices', () => {
+  let database = createEmptyDatabase();
+  database = createCategory(database, 'generic', '工作', { id: 'work' }).database;
+  database = saveAsset(database, { type: 'generic', title: '周报', content: '总结本周', categoryId: 'work' }, { id: 'prompt-1' }).database;
+  const result = applyAiAssetResult(database, 'prompt-1', { title: 'AI 标题', categoryName: '其他' });
+  assert.equal(result.assets[0].title, '周报');
+  assert.equal(result.assets[0].categoryId, 'work');
+});
+
+test('AI grouping only moves eligible uncategorized entries', () => {
+  let database = createEmptyDatabase();
+  database = saveAsset(database, { type: 'generic', content: '写邮件' }, { id: 'auto' }).database;
+  database = saveAsset(database, { type: 'generic', content: '我的手动分类', categoryId: null }, { id: 'manual' }).database;
+  database.assets.find((asset) => asset.id === 'manual').categorySource = 'manual';
+  database = applyAiCategoryGroups(database, 'generic', [{ name: '工作沟通', assetIds: ['auto', 'manual'] }]);
+  assert.ok(database.assets.find((asset) => asset.id === 'auto').categoryId);
+  assert.equal(database.assets.find((asset) => asset.id === 'manual').categoryId, null);
+});
+
+test('GitHub Skill direct update preserves its local category', () => {
+  const githubSkill = (commit, id, content = skill) => ({ id, skillContent: content, fileCount: 2, totalSize: 120, source: { repository: 'acme/demo', directory: 'skills/review', commit, defaultBranch: 'main', url: 'https://github.com/acme/demo/blob/main/skills/review/SKILL.md' } });
+  let database = createEmptyDatabase();
+  database = createCategory(database, 'skill', '工作', { id: 'work' }).database;
+  const first = saveGithubSkillAsset(database, githubSkill('abc', 'package-1'), { id: 'skill-1' });
+  database = first.database;
+  database.assets[0].categoryId = 'work';
+  database.assets[0].categorySource = 'manual';
+  const second = saveGithubSkillAsset(database, githubSkill('def', 'package-2', skill.replace('Review email drafts', 'Review important email drafts')), { updateAssetId: 'skill-1' });
+  assert.equal(second.asset.skillPackage.source.commit, 'def');
+  assert.equal(second.asset.skillPackage.packageId, 'package-2');
+  assert.equal(second.asset.categoryId, 'work');
+  assert.equal(second.asset.categorySource, 'manual');
 });
 
 test('prompt and skill content is preserved verbatim after validation', () => {

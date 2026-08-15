@@ -3,20 +3,22 @@
 FutureContext 是一个本地优先的 Edge / Chrome 扩展，用于保存、分类、编辑和复制：
 
 - 通用 Prompt
-- 单文件 `SKILL.md`
+- 单文件或从 GitHub 收集的包式 `SKILL.md`
 - 普通与私密 AIGC Prompt
 
-完整产品范围见 [SPEC.md](./SPEC.md)，术语与隐私边界见 [CONTEXT.md](./CONTEXT.md)。
+完整产品范围见 [一期规格](./SPEC.md) 与 [二期规格](./SPEC_PHASE2.md)，术语与隐私边界见 [CONTEXT.md](./CONTEXT.md)。
 
-## 一期能力
+## 当前能力
 
 - 工具栏弹窗内完成三类资产的搜索、一级分类、编辑、复制与永久删除。
-- Skill 只接受带 YAML frontmatter 的单个 `SKILL.md`，并校验 `name` 与 `description`。
+- Skill 可直接编辑带 YAML frontmatter 的 `SKILL.md`，也可从公开 GitHub 的具体 `SKILL.md` 页面收集同目录完整包；包内脚本仅保存、绝不执行。
+- 通用 Prompt 标题可选；配置后台 AI 后可无感补全标题和归入分类。AIGC Prompt 永不发送给 AI Provider。
+- 支持 OpenAI、OpenCode Go、DeepSeek、OpenRouter 和自定义 OpenAI 兼容 Provider；API Key 由私密库密码加密保存，并只在当前浏览器会话解锁后供后台使用。
 - AIGC Prompt 可在普通库和私密库之间明确迁移。
 - 私密库使用可恢复的本地隐私锁：关闭弹窗即重新锁定；重设密码不会删除内容。
 - 编辑草稿自动保留，避免弹窗关闭导致输入丢失。
 - 支持本地 JSON 完整备份；导入只合并新内容，不覆盖已有条目。
-- 无账号、无云同步、无网页读取、无自动填入网页输入框。
+- 无账号、无云同步、无自动填入网页输入框；GitHub 收集和用户配置的 Provider 调用都必须由用户主动启用并授予对应站点权限。
 
 ## 隐私边界
 
@@ -40,4 +42,4 @@ npm test
 npm run check
 ```
 
-项目不依赖运行时或构建工具，使用原生 Manifest V3、`chrome.storage.local` 与 Web Crypto 的 SHA-256 摘要校验隐私锁密码。
+项目不依赖运行时或构建工具，使用原生 Manifest V3、`chrome.storage`、IndexedDB 与 Web Crypto。GitHub 包资源保存在 IndexedDB；API Key 使用 PBKDF2 + AES-GCM 加密后本地保存。

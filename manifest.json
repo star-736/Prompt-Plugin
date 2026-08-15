@@ -1,9 +1,22 @@
 {
   "manifest_version": 3,
   "name": "FutureContext",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A local-first library for reusable AI prompts, Skills, and private AIGC ideas.",
-  "permissions": ["storage"],
+  "permissions": ["storage", "activeTab", "scripting", "alarms", "permissions"],
+  "optional_host_permissions": [
+    "https://api.github.com/*",
+    "https://github.com/*",
+    "https://api.openai.com/*",
+    "https://opencode.ai/*",
+    "https://api.deepseek.com/*",
+    "https://openrouter.ai/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
   "icons": {
     "16": "icons/futurecontext-c.png",
     "32": "icons/futurecontext-c.png",

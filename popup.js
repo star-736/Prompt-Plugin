@@ -13,14 +13,20 @@ import {
   mergeBackup,
   moveAigcAsset,
   removeAsset,
+  resolveStructureProposal,
   renameCategory,
   saveAsset,
   saveDatabase,
   saveDraft,
+  updateAiSettings,
+  updateStructureProposal,
+  removeProviderConfig,
   scopeFor,
   setPrivacyPassword,
   verifyPrivacyPassword
 } from './store.js';
+import { PROVIDER_PRESETS, providerOrigin } from './ai-organizer.js';
+import { deletePackage, exportPackages, getPackage, importPackages, isTextFile } from './package-store.js';
 
 const app = document.querySelector('#app');
 const toast = document.querySelector('#toast');
@@ -43,7 +49,12 @@ const state = {
   editor: null,
   manageScope: null,
   categoryEditId: null,
-  lockReturn: null
+  lockReturn: null,
+  providerEditId: null,
+  packageAssetId: null,
+  packageRecord: null,
+  aiUnlockAction: null,
+  proposalEditingId: null
 };
 
 let toastTimer;
@@ -96,6 +107,16 @@ function showToast(message) {
   toastTimer = setTimeout(() => toast.classList.remove('is-visible'), 2400);
 }
 
+async function sendBackground(message) {
+  const response = await chrome.runtime.sendMessage(message);
+  if (!response?.ok) throw new Error(response?.error || '后台操作失败。');
+  return response.result;
+}
+
+async function requestOrigins(origins) {
+  if (!await chrome.permissions.request({ origins })) throw new Error('需要授权对应网站后才能继续。');
+}
+
 async function commit(next) {
   await saveDatabase(next);
   state.database = next;
@@ -143,15 +164,14 @@ function previewFor(asset) {
 
 function renderAssetList() {
   const assets = assetsFor(state.database, { type: state.activeTab, privacy: activePrivacy(), query: state.search, categoryId: state.categoryId });
-  if (!assets.length) return `<div class="empty-state"><p>暂无${escapeHtml(emptyName())}</p><button class="button button-primary" type="button" data-action="new-asset">新建${escapeHtml(emptyName())}</button></div>`;
+  const githubCollect = state.activeTab === 'skill' ? '<button class="button button-ghost" type="button" data-action="collect-github-skill">从当前 GitHub 页面收集</button>' : '';
+  if (!assets.length) return `<div class="empty-state"><p>暂无${escapeHtml(emptyName())}</p><div class="empty-actions"><button class="button button-primary" type="button" data-action="new-asset">新建${escapeHtml(emptyName())}</button>${githubCollect}</div></div>`;
   return `<ul class="asset-list">${assets.map((asset) => `<li class="asset-row">
     <button class="asset-open" type="button" data-action="open-asset" data-id="${asset.id}">
-      <span class="asset-title">${escapeHtml(displayTitle(asset))}</span>
-      <span class="asset-preview">${escapeHtml(previewFor(asset))}</span>
-      ${asset.privacy === 'normal' ? `<span class="asset-meta"><span class="category-badge">${escapeHtml(categoryName(asset.categoryId))}</span></span>` : ''}
+      ${asset.type === 'aigc' ? `<span class="asset-aigc-content">${escapeHtml(asset.content)}</span>` : `<span class="asset-title">${escapeHtml(displayTitle(asset))}</span><span class="asset-preview">${escapeHtml(previewFor(asset))}</span>${asset.privacy === 'normal' ? `<span class="asset-meta"><span class="category-badge">${escapeHtml(categoryName(asset.categoryId))}</span></span>` : ''}`}
     </button>
     <button class="button button-ghost button-small copy-button" type="button" data-action="copy-asset" data-id="${asset.id}">复制</button>
-  </li>`).join('')}</ul>`;
+  </li>`).join('')}</ul>${githubCollect ? `<div class="library-secondary-action">${githubCollect}</div>` : ''}`;
 }
 
 function renderPrivateGate() {
@@ -196,7 +216,7 @@ function editorChanged(values = editorValues()) {
 }
 
 function categoryOptions(type, privacy, selectedId, creating = false) {
-  if (privacy === 'private') return '';
+  if (privacy === 'private' || type === 'aigc') return '';
   const options = categoriesFor(state.database, scopeFor(type, privacy));
   return `<div class="field"><label>分类<select id="editor-category"><option value="">未分类</option>${options.map((category) => `<option value="${category.id}" ${selectedId === category.id ? 'selected' : ''}>${escapeHtml(category.name)}</option>`).join('')}</select></label>
     ${creating ? `<div class="inline-create editor-category-create"><input id="editor-new-category" maxlength="40" placeholder="新建分类" /><button class="button button-soft button-small" type="button" data-action="create-category-from-editor">创建</button><button class="button button-ghost button-small" type="button" data-action="cancel-category-from-editor">取消</button></div>` : '<button class="inline-action" type="button" data-action="new-category-from-editor">+ 新建分类</button>'}
@@ -208,7 +228,7 @@ function renderEditor() {
   const existing = assetId ? state.database.assets.find((asset) => asset.id === assetId) : null;
   const isSkill = type === 'skill';
   const heading = existing ? `编辑${labels[type]}` : `新建${labels[type]}`;
-  const titleField = isSkill ? '' : `<div class="field"><label>${type === 'generic' ? '标题' : '标题（可选）'}<input id="editor-title-input" maxlength="120" value="${escapeHtml(values.title)}" ${type === 'generic' ? 'required' : ''} /></label></div>`;
+  const titleField = type === 'generic' ? '<div class="field"><label>标题（可选）<input id="editor-title-input" maxlength="120" value="' + escapeHtml(values.title) + '" /></label></div>' : '';
   const contentLabel = isSkill ? 'SKILL.md' : '内容';
   const contentHelp = isSkill ? '<p class="form-help">保存时会校验 YAML frontmatter 中的 name 与 description。</p>' : '';
   const management = existing?.type === 'aigc' ? `<div class="secondary-management">
@@ -237,11 +257,54 @@ function renderCategories() {
 
 function renderSettings() {
   const lockStatus = hasPrivacyLock(state.database) ? '已设置' : '未设置';
+  const ai = state.database.ai;
+  const current = ai.providers.find((provider) => provider.id === ai.activeProviderId);
+  const status = ai.status?.state === 'paused' ? ai.status.message : ai.enabled ? '后台整理已开启' : '后台整理未开启';
   return `${pageHeading('设置', 'library')}<div class="settings-list">
     <div class="setting-row"><div><div class="setting-title">隐私锁</div><div class="setting-description">${lockStatus}。重设不会删除私密内容。</div></div><button class="button button-ghost button-small" type="button" data-action="reset-lock">${hasPrivacyLock(state.database) ? '重设隐私锁' : '设置隐私锁'}</button></div>
+    <div class="setting-row setting-row-stack"><div><div class="setting-title">后台 AI 整理</div><div class="setting-description">${escapeHtml(status)}${current ? ` 当前 Provider：${escapeHtml(current.label)}。` : ' 还未配置 Provider。'}</div></div><div class="setting-actions"><label class="switch-label"><input id="ai-enabled" type="checkbox" ${ai.enabled ? 'checked' : ''} />开启</label><button class="button button-ghost button-small" type="button" data-action="manage-providers">Provider</button></div></div>
+    <div class="setting-row"><div><div class="setting-title">整理现有内容</div><div class="setting-description">仅处理通用 Prompt 与 Skill；AIGC 永不发送。</div></div><button class="button button-ghost button-small" type="button" data-action="organize-existing">整理</button></div>
+    <div class="setting-row"><div><div class="setting-title">分类结构建议</div><div class="setting-description">已有分类的合并、重命名或拆分必须由你确认应用。</div></div><button class="button button-ghost button-small" type="button" data-action="view-proposals">${ai.proposals.filter((proposal) => proposal.status === 'pending').length ? '查看建议' : '暂无建议'}</button></div>
+    <div class="setting-row"><div><div class="setting-title">整理阈值</div><div class="setting-description">未分类 ${ai.thresholds.uncategorized} 条；结构检查 ${ai.thresholds.restructureChanges} 条 / ${ai.thresholds.restructureDays} 天。</div></div><button class="button button-ghost button-small" type="button" data-action="edit-ai-thresholds">调整</button></div>
     <div class="setting-row"><div><div class="setting-title">导出全部数据</div><div class="setting-description">导出一个包含普通与私密内容的 JSON 备份文件。</div></div><button class="button button-ghost button-small" type="button" data-action="export-backup">导出</button></div>
     <div class="setting-row"><div><div class="setting-title">导入备份</div><div class="setting-description">只合并新内容，不覆盖或删除已有条目。</div></div><button class="button button-ghost button-small" type="button" data-action="import-backup">导入</button></div>
   </div>`;
+}
+
+function renderProviders() {
+  const providers = state.database.ai.providers;
+  return `${pageHeading('Provider', 'settings')}<div class="provider-intro">API Key 只会以隐私锁密码加密后保存。本次浏览器会话首次使用后台 AI 时解锁一次。</div><div class="settings-list">${providers.map((provider) => `<div class="setting-row"><div><div class="setting-title">${escapeHtml(provider.label)}${provider.id === state.database.ai.activeProviderId ? ' · 当前' : ''}</div><div class="setting-description">${escapeHtml(provider.model)} · ${escapeHtml(provider.baseUrl)}</div></div><div class="setting-actions"><button class="button button-ghost button-small" type="button" data-action="activate-provider" data-id="${provider.id}">设为当前</button><button class="button button-ghost button-small" type="button" data-action="test-provider" data-id="${provider.id}">测试</button><button class="button button-ghost button-small" type="button" data-action="edit-provider" data-id="${provider.id}">编辑</button><button class="button button-danger button-small" type="button" data-action="delete-provider" data-id="${provider.id}">删除</button></div></div>`).join('') || '<div class="empty-state compact-empty"><p>暂无 Provider</p></div>'}</div><div class="editor-footer"><button class="button button-primary" type="button" data-action="new-provider">+ 添加 Provider</button></div>`;
+}
+
+function renderProviderEditor() {
+  const existing = state.providerEditId ? state.database.ai.providers.find((provider) => provider.id === state.providerEditId) : null;
+  const provider = existing ?? { kind: 'openai', label: 'OpenAI', baseUrl: PROVIDER_PRESETS.openai.baseUrl, model: PROVIDER_PRESETS.openai.modelHint };
+  return `${pageHeading(existing ? '编辑 Provider' : '添加 Provider', 'manage-providers')}<form class="editor-form" id="provider-form" data-id="${escapeHtml(provider.id ?? '')}"><div class="field"><label>Provider<select id="provider-kind">${Object.entries(PROVIDER_PRESETS).map(([key, item]) => `<option value="${key}" ${provider.kind === key ? 'selected' : ''}>${item.label}</option>`).join('')}</select></label></div><div class="field"><label>显示名称<input id="provider-label" maxlength="60" value="${escapeHtml(provider.label)}" required /></label></div><div class="field"><label>Base URL<input id="provider-base-url" value="${escapeHtml(provider.baseUrl)}" required /></label></div><div class="field"><label>Model ID<input id="provider-model" value="${escapeHtml(provider.model)}" required /></label></div><div class="field"><label>${existing ? '新的 API Key（留空则保留原 Key）' : 'API Key'}<input id="provider-api-key" type="password" autocomplete="off" ${existing ? '' : 'required'} /></label></div><div class="field"><label>隐私锁密码<input id="provider-password" type="password" autocomplete="current-password" required /></label><p class="form-help">用于加密 API Key；FutureContext 不会长期明文保存它。</p></div><button class="button button-primary" type="submit">保存 Provider</button></form>`;
+}
+
+function renderThresholds() {
+  const values = state.database.ai.thresholds;
+  return `${pageHeading('整理阈值', 'settings')}<form class="editor-form" id="threshold-form"><div class="field"><label>未分类条目数<input name="uncategorized" type="number" min="2" max="50" value="${values.uncategorized}" required /></label></div><div class="field"><label>结构检查新增/编辑条数<input name="restructureChanges" type="number" min="1" max="100" value="${values.restructureChanges}" required /></label></div><div class="field"><label>结构检查最短间隔天数<input name="restructureDays" type="number" min="1" max="365" value="${values.restructureDays}" required /></label></div><button class="button button-primary" type="submit">保存阈值</button></form>`;
+}
+
+function renderAiUnlock() {
+  return `<div class="gate"><section class="gate-card"><div class="gate-icon">${lockIcon()}</div><h1>解锁后台 AI</h1><p>本次 Edge 浏览器会话只需输入一次。API Key 不会长期明文保存。</p><form class="editor-form" id="ai-unlock-form"><div class="field"><label>隐私锁密码<input id="ai-unlock-password" type="password" autocomplete="current-password" required /></label></div><p class="form-help" id="ai-unlock-error" hidden></p><button class="button button-primary" type="submit">解锁并继续</button></form><button class="back-button" type="button" data-action="manage-providers">返回 Provider</button></section></div>`;
+}
+
+function renderProposals() {
+  const proposals = state.database.ai.proposals.filter((proposal) => proposal.status === 'pending');
+  return `${pageHeading('分类结构建议', 'settings')}<div class="proposal-list">${proposals.map((proposal) => state.proposalEditingId === proposal.id ? `<section class="section-card"><h2>调整分类方案</h2><form id="proposal-form" data-id="${proposal.id}">${(proposal.groups ?? []).map((group, index) => `<div class="proposal-edit-row"><label>现有分类（用 / 分隔）<input name="from-${index}" value="${escapeHtml((group.from ?? []).join(' / '))}" required /></label><label>归纳为<input name="to-${index}" value="${escapeHtml(group.to ?? '')}" required /></label></div>`).join('')}<div class="section-actions"><button class="button button-primary button-small" type="submit">保存并应用</button><button class="button button-ghost button-small" type="button" data-action="cancel-proposal-edit">取消</button></div></form></section>` : `<section class="section-card"><h2>${escapeHtml(proposal.summary || '分类结构建议')}</h2>${(proposal.groups ?? []).map((group) => `<p>${escapeHtml((group.from ?? []).join(' / '))} → ${escapeHtml(group.to ?? '')}</p>`).join('')}<div class="section-actions"><button class="button button-primary button-small" type="button" data-action="apply-proposal" data-id="${proposal.id}">应用方案</button><button class="button button-ghost button-small" type="button" data-action="edit-proposal" data-id="${proposal.id}">调整方案</button><button class="button button-ghost button-small" type="button" data-action="dismiss-proposal" data-id="${proposal.id}">保持现有</button></div></section>`).join('') || '<div class="empty-state compact-empty"><p>暂无分类结构建议</p></div>'}</div>`;
+}
+
+function decodePackageText(file) {
+  try { return decodeURIComponent(Array.from(atob(String(file.content ?? '').replace(/\n/g, '')), (char) => `%${char.charCodeAt(0).toString(16).padStart(2, '0')}`).join('')); } catch { return ''; }
+}
+
+function renderPackageDetail() {
+  const asset = state.database.assets.find((item) => item.id === state.packageAssetId);
+  const record = state.packageRecord;
+  if (!asset || !record) return `${pageHeading('Skill 文件', 'library')}<div class="empty-state"><p>无法读取本地 Skill 文件。</p></div>`;
+  return `${pageHeading(asset.title, 'library')}<section class="section-card package-source"><h2>GitHub Skill</h2><p>${escapeHtml(asset.skillPackage.source.repository)} · ${escapeHtml(asset.skillPackage.source.directory)} · ${escapeHtml(asset.skillPackage.source.commit.slice(0, 7))}</p><div class="section-actions"><button class="button button-ghost button-small" type="button" data-action="update-github-skill" data-id="${asset.id}">检查 GitHub 更新</button><button class="button button-ghost button-small" type="button" data-action="copy-asset" data-id="${asset.id}">复制 SKILL.md</button></div></section><div class="package-tree">${record.files.map((file) => `<details class="package-file" ${file.path === 'SKILL.md' ? 'open' : ''}><summary>${escapeHtml(file.path)} <span>${Math.ceil(file.size / 1024)} KB</span></summary>${isTextFile(file.path, file.contentType) ? `<p class="script-note">${/\.(py|sh|bash|zsh|ps1|js|mjs|cjs)$/i.test(file.path) ? '仅保存，不执行。' : '只读文本。'}</p><pre>${escapeHtml(decodePackageText(file))}</pre>` : '<p class="script-note">二进制资源：仅保存，不执行。</p>'}</details>`).join('')}</div>`;
 }
 
 function renderLockReset() {
@@ -253,6 +316,12 @@ function render() {
   if (state.view === 'editor') app.innerHTML = renderEditor();
   else if (state.view === 'categories') app.innerHTML = renderCategories();
   else if (state.view === 'settings') app.innerHTML = renderSettings();
+  else if (state.view === 'providers') app.innerHTML = renderProviders();
+  else if (state.view === 'provider-editor') app.innerHTML = renderProviderEditor();
+  else if (state.view === 'thresholds') app.innerHTML = renderThresholds();
+  else if (state.view === 'ai-unlock') app.innerHTML = renderAiUnlock();
+  else if (state.view === 'proposals') app.innerHTML = renderProposals();
+  else if (state.view === 'package-detail') app.innerHTML = renderPackageDetail();
   else if (state.view === 'reset-lock') app.innerHTML = renderLockReset();
   else app.innerHTML = renderLibrary();
 }
@@ -286,7 +355,9 @@ function openEditor(asset = null) {
   const privacy = asset?.privacy ?? activePrivacy();
   const reference = { type, privacy, id: asset?.id ?? null };
   const draft = getDraft(state.database, reference);
-  const baseline = asset ? { title: asset.type === 'skill' ? '' : asset.title, content: asset.content, categoryId: asset.categoryId } : { title: '', content: '', categoryId: privacy === 'private' ? null : state.categoryId };
+  const baseline = asset
+    ? { title: asset.type === 'generic' ? asset.title : '', content: asset.content, categoryId: ['generic', 'skill'].includes(asset.type) ? asset.categoryId : null }
+    : { title: '', content: '', categoryId: ['generic', 'skill'].includes(type) && privacy !== 'private' ? state.categoryId : null };
   const values = draft ? { title: draft.title ?? '', content: draft.content ?? '', categoryId: draft.categoryId ?? null } : baseline;
   state.editor = { type, privacy, assetId: asset?.id ?? null, reference, baseline, values };
   state.view = 'editor';
@@ -373,6 +444,7 @@ async function saveEditor() {
   try {
     const result = saveAsset(state.database, input);
     await commit(result.database);
+    if (result.queued) void sendBackground({ type: 'schedule-ai' });
     state.editor = null;
     state.view = 'library';
     render();
@@ -391,6 +463,7 @@ async function deleteAsset(id) {
     actionLabel: '永久删除',
     danger: true,
     onConfirm: async () => {
+      if (asset.skillPackage?.packageId) await deletePackage(asset.skillPackage.packageId);
       await commit(removeAsset(state.database, id));
       state.editor = null;
       state.view = 'library';
@@ -453,6 +526,7 @@ async function resetLock(form) {
   }
   try {
     await commit(await setPrivacyPassword(state.database, password));
+    void sendBackground({ type: 'clear-ai-session' });
     state.unlockedPrivate = true;
     state.view = 'settings';
     render();
@@ -484,8 +558,9 @@ async function requestExport() {
   });
 }
 
-function performExport() {
-  const backup = createBackup(state.database);
+async function performExport() {
+  const packages = await exportPackages(state.database.assets.map((asset) => asset.skillPackage?.packageId));
+  const backup = createBackup(state.database, Date.now(), packages);
   const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
@@ -501,6 +576,7 @@ async function importBackup(file) {
   try {
     const result = mergeBackup(state.database, await file.text());
     await commit(result.database);
+    await importPackages(result.packages, result.packageImports);
     state.categoryId = null;
     render();
     showToast(`已导入 ${result.imported} 项，跳过 ${result.skipped} 项`);
@@ -509,6 +585,78 @@ async function importBackup(file) {
   } finally {
     backupInput.value = '';
   }
+}
+
+async function openAsset(asset) {
+  if (!asset) return;
+  if (asset.skillPackage?.packageId) {
+    state.packageAssetId = asset.id;
+    state.packageRecord = await getPackage(asset.skillPackage.packageId);
+    state.view = 'package-detail';
+    render();
+    return;
+  }
+  openEditor(asset);
+}
+
+async function activateProvider(id) {
+  await commit(updateAiSettings(state.database, { activeProviderId: id }));
+  render();
+  showToast('已设为当前 Provider');
+}
+
+function deleteProvider(id) {
+  const provider = state.database.ai.providers.find((item) => item.id === id);
+  if (!provider) return;
+  showConfirm({ title: '删除 Provider', description: `“${provider.label}”的加密 API Key 将被删除。`, actionLabel: '删除 Provider', danger: true, onConfirm: async () => {
+    await sendBackground({ type: 'delete-provider', id });
+    state.database = await loadDatabase(); state.view = 'providers'; render(); showToast('Provider 已删除');
+  } });
+}
+
+async function beginAiAction(action) {
+  const provider = action.providerId ? state.database.ai.providers.find((item) => item.id === action.providerId) : state.database.ai.providers.find((item) => item.id === state.database.ai.activeProviderId);
+  if (!provider) return showToast('请先配置并选择一个 Provider。');
+  if (action.providerId && action.providerId !== state.database.ai.activeProviderId) await activateProvider(action.providerId);
+  const status = await sendBackground({ type: 'ai-session-status' });
+  state.aiUnlockAction = action;
+  if (!status.unlocked) { state.view = 'ai-unlock'; return render(); }
+  await completeAiAction();
+}
+
+async function completeAiAction() {
+  const action = state.aiUnlockAction;
+  if (!action) return;
+  if (action.type === 'test') { await sendBackground({ type: 'test-provider', id: action.providerId ?? state.database.ai.activeProviderId }); showToast('连接测试成功'); state.view = 'providers'; }
+  if (action.type === 'organize') { const result = await sendBackground({ type: 'queue-existing' }); showToast(result.count ? `已加入 ${result.count} 项后台整理` : '没有可整理的内容'); state.view = 'settings'; }
+  state.aiUnlockAction = null;
+  state.database = await loadDatabase(); render();
+}
+
+async function resolveProposal(id, action) {
+  await commit(resolveStructureProposal(state.database, id, action));
+  render();
+  showToast(action === 'apply' ? '分类方案已应用' : '已保留当前分类');
+}
+
+async function collectGitHubSkillFromPage() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!String(tab?.url ?? '').startsWith('https://github.com/')) throw new Error('请先打开公开 GitHub 仓库中的具体 SKILL.md 文件页面。');
+    await requestOrigins(['https://github.com/*', 'https://api.github.com/*']);
+    const result = await sendBackground({ type: 'collect-github-skill' });
+    state.database = await loadDatabase(); render();
+    showToast(result.duplicate ? '已是当前保存版本' : 'GitHub Skill 已保存');
+  } catch (error) { showToast(error.message || '收集 GitHub Skill 失败。'); }
+}
+
+async function updateGitHubSkill(id) {
+  try {
+    const result = await sendBackground({ type: 'update-github-skill', assetId: id });
+    state.database = await loadDatabase();
+    if (result.changed) { state.packageRecord = await getPackage(result.asset.skillPackage.packageId); render(); showToast('已更新为 GitHub 最新版本'); }
+    else showToast('已是当前保存版本');
+  } catch (error) { showToast(error.message || '检查 GitHub 更新失败。'); }
 }
 
 async function handleClick(event) {
@@ -535,7 +683,7 @@ async function handleClick(event) {
   if (action === 'library') { state.view = 'library'; return render(); }
   if (action === 'editor-back') return returnFromEditor();
   if (action === 'new-asset') return openEditor();
-  if (action === 'open-asset') return openEditor(assetById(button.dataset.id));
+  if (action === 'open-asset') return openAsset(assetById(button.dataset.id));
   if (action === 'copy-asset') return copyText(assetById(button.dataset.id)?.content ?? '');
   if (action === 'copy-editor') return copyText(editorValues().content);
   if (action === 'new-category-from-editor') return beginEditorCategoryCreate();
@@ -552,6 +700,21 @@ async function handleClick(event) {
   if (action === 'reset-lock') return beginResetLock();
   if (action === 'export-backup') return requestExport();
   if (action === 'import-backup') return backupInput.click();
+  if (action === 'manage-providers') { state.view = 'providers'; return render(); }
+  if (action === 'new-provider') { state.providerEditId = null; state.view = 'provider-editor'; return render(); }
+  if (action === 'edit-provider') { state.providerEditId = button.dataset.id; state.view = 'provider-editor'; return render(); }
+  if (action === 'activate-provider') return activateProvider(button.dataset.id);
+  if (action === 'delete-provider') return deleteProvider(button.dataset.id);
+  if (action === 'test-provider') return beginAiAction({ type: 'test', providerId: button.dataset.id });
+  if (action === 'organize-existing') return beginAiAction({ type: 'organize' });
+  if (action === 'view-proposals') { state.view = 'proposals'; return render(); }
+  if (action === 'edit-ai-thresholds') { state.view = 'thresholds'; return render(); }
+  if (action === 'apply-proposal') return resolveProposal(button.dataset.id, 'apply');
+  if (action === 'dismiss-proposal') return resolveProposal(button.dataset.id, 'dismiss');
+  if (action === 'edit-proposal') { state.proposalEditingId = button.dataset.id; return render(); }
+  if (action === 'cancel-proposal-edit') { state.proposalEditingId = null; return render(); }
+  if (action === 'collect-github-skill') return collectGitHubSkillFromPage();
+  if (action === 'update-github-skill') return updateGitHubSkill(button.dataset.id);
 }
 
 async function deleteManagedCategory(id) {
@@ -590,6 +753,41 @@ async function handleSubmit(event) {
   if (form.id === 'editor-form') return saveEditor();
   if (form.id === 'private-gate-form') return handlePrivateGate(form);
   if (form.id === 'reset-lock-form') return resetLock(form);
+  if (form.id === 'provider-form') {
+    const kind = form.querySelector('#provider-kind').value;
+    const provider = {
+      id: form.dataset.id || undefined,
+      kind,
+      label: form.querySelector('#provider-label').value,
+      baseUrl: form.querySelector('#provider-base-url').value,
+      model: form.querySelector('#provider-model').value,
+      apiKey: form.querySelector('#provider-api-key').value
+    };
+    try {
+      await requestOrigins([`${providerOrigin({ baseUrl: provider.baseUrl })}/*`]);
+      await sendBackground({ type: 'save-provider', provider, password: form.querySelector('#provider-password').value });
+      state.database = await loadDatabase(); state.view = 'providers'; render(); showToast('Provider 已保存');
+    } catch (error) { showToast(error.message || '保存 Provider 失败。'); }
+    return;
+  }
+  if (form.id === 'threshold-form') {
+    const thresholds = Object.fromEntries(['uncategorized', 'restructureChanges', 'restructureDays'].map((name) => [name, Number(form.elements[name].value)]));
+    await commit(updateAiSettings(state.database, { thresholds })); state.view = 'settings'; render(); showToast('整理阈值已保存'); return;
+  }
+  if (form.id === 'ai-unlock-form') {
+    const error = form.querySelector('#ai-unlock-error');
+    try { await sendBackground({ type: 'unlock-ai', password: form.querySelector('#ai-unlock-password').value }); await completeAiAction(); }
+    catch (reason) { error.textContent = reason.message || '解锁失败。'; error.hidden = false; }
+    return;
+  }
+  if (form.id === 'proposal-form') {
+    const proposal = state.database.ai.proposals.find((item) => item.id === form.dataset.id);
+    const groups = (proposal?.groups ?? []).map((_, index) => ({ from: form.elements[`from-${index}`].value.split('/'), to: form.elements[`to-${index}`].value }));
+    await commit(updateStructureProposal(state.database, form.dataset.id, groups));
+    state.proposalEditingId = null;
+    await resolveProposal(form.dataset.id, 'apply');
+    return;
+  }
   if (form.id === 'category-create-form') {
     try {
       const result = createCategory(state.database, state.manageScope, form.querySelector('#new-category-name').value);
@@ -630,7 +828,22 @@ app.addEventListener('input', (event) => {
   }
   if (event.target.closest('#editor-form')) void persistEditorDraft();
 });
-app.addEventListener('change', (event) => { if (event.target.closest('#editor-form')) void persistEditorDraft(); });
+app.addEventListener('change', (event) => {
+  if (event.target.closest('#editor-form')) void persistEditorDraft();
+  if (event.target.id === 'ai-enabled') {
+    const next = updateAiSettings(state.database, { enabled: event.target.checked });
+    void commit(next).then(() => { if (event.target.checked) return sendBackground({ type: 'schedule-ai' }); }).then(() => { render(); showToast(event.target.checked ? '后台 AI 已开启' : '后台 AI 已关闭'); }).catch(() => showToast('更新后台 AI 设置失败。'));
+  }
+  if (event.target.id === 'provider-kind') {
+    const preset = PROVIDER_PRESETS[event.target.value];
+    const form = event.target.closest('form');
+    if (preset && !form.dataset.id) {
+      form.querySelector('#provider-label').value = preset.label;
+      form.querySelector('#provider-base-url').value = preset.baseUrl;
+      form.querySelector('#provider-model').value = preset.modelHint;
+    }
+  }
+});
 app.addEventListener('submit', (event) => { void handleSubmit(event); });
 backupInput.addEventListener('change', () => { void importBackup(backupInput.files[0]); });
 confirmDialog.addEventListener('close', () => {
