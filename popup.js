@@ -195,10 +195,12 @@ function editorChanged(values = editorValues()) {
   return values.title !== baseline.title || values.content !== baseline.content || (values.categoryId || null) !== (baseline.categoryId || null);
 }
 
-function categoryOptions(type, privacy, selectedId) {
+function categoryOptions(type, privacy, selectedId, creating = false) {
   if (privacy === 'private') return '';
   const options = categoriesFor(state.database, scopeFor(type, privacy));
-  return `<div class="field"><label>分类<select id="editor-category"><option value="">未分类</option>${options.map((category) => `<option value="${category.id}" ${selectedId === category.id ? 'selected' : ''}>${escapeHtml(category.name)}</option>`).join('')}</select></label></div>`;
+  return `<div class="field"><label>分类<select id="editor-category"><option value="">未分类</option>${options.map((category) => `<option value="${category.id}" ${selectedId === category.id ? 'selected' : ''}>${escapeHtml(category.name)}</option>`).join('')}</select></label>
+    ${creating ? `<div class="inline-create editor-category-create"><input id="editor-new-category" maxlength="40" placeholder="新建分类" /><button class="button button-soft button-small" type="button" data-action="create-category-from-editor">创建</button><button class="button button-ghost button-small" type="button" data-action="cancel-category-from-editor">取消</button></div>` : '<button class="inline-action" type="button" data-action="new-category-from-editor">+ 新建分类</button>'}
+  </div>`;
 }
 
 function renderEditor() {
@@ -215,7 +217,7 @@ function renderEditor() {
     </div>` : existing ? `<div class="secondary-management"><button class="button button-danger button-small" type="button" data-action="delete-asset" data-id="${existing.id}">永久删除</button></div>` : '';
   return `${pageHeading(heading, 'editor-back')}<form class="editor-form" id="editor-form">
     ${titleField}
-    ${categoryOptions(type, privacy, values.categoryId)}
+    ${categoryOptions(type, privacy, values.categoryId, state.editor.categoryCreating)}
     <div class="field"><label>${contentLabel}<textarea id="editor-content" class="${isSkill ? 'skill-editor' : ''}" ${isSkill ? '' : 'required'}>${escapeHtml(values.content)}</textarea></label>${contentHelp}</div>
     <div class="editor-footer">
       <button class="button button-ghost copy-editor" type="button" data-action="copy-editor">复制</button>
@@ -300,6 +302,31 @@ async function persistEditorDraft() {
     await commit(saveDraft(state.database, state.editor.reference, values));
   } catch {
     showToast('草稿保存失败，请重试。');
+  }
+}
+
+async function beginEditorCategoryCreate() {
+  if (!state.editor || state.editor.privacy === 'private') return;
+  const values = editorValues();
+  state.editor.values = values;
+  await commit(saveDraft(state.database, state.editor.reference, values));
+  state.editor.categoryCreating = true;
+  render();
+  document.querySelector('#editor-new-category')?.focus();
+}
+
+async function createEditorCategory() {
+  if (!state.editor) return;
+  const name = document.querySelector('#editor-new-category')?.value ?? '';
+  try {
+    const created = createCategory(state.database, scopeFor(state.editor.type, state.editor.privacy), name);
+    state.editor.values = { ...state.editor.values, categoryId: created.category.id };
+    state.editor.categoryCreating = false;
+    await commit(saveDraft(created.database, state.editor.reference, state.editor.values));
+    render();
+    showToast('分类已新建并选中');
+  } catch (error) {
+    showToast(error.message || '新建分类失败。');
   }
 }
 
@@ -511,6 +538,9 @@ async function handleClick(event) {
   if (action === 'open-asset') return openEditor(assetById(button.dataset.id));
   if (action === 'copy-asset') return copyText(assetById(button.dataset.id)?.content ?? '');
   if (action === 'copy-editor') return copyText(editorValues().content);
+  if (action === 'new-category-from-editor') return beginEditorCategoryCreate();
+  if (action === 'create-category-from-editor') return createEditorCategory();
+  if (action === 'cancel-category-from-editor') { state.editor.categoryCreating = false; return render(); }
   if (action === 'toggle-category-menu') { state.categoryMenuOpen = !state.categoryMenuOpen; return render(); }
   if (action === 'manage-categories') { state.manageScope = currentScope(); state.categoryEditId = null; state.view = 'categories'; return render(); }
   if (action === 'rename-category') { state.categoryEditId = button.dataset.id; return render(); }
