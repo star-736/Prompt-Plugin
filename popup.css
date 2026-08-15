@@ -1,0 +1,27 @@
+:root { color-scheme: dark; font-family: Inter, "Microsoft YaHei", system-ui, sans-serif; background: #101014; color: #f5f3f8; }
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 390px; max-width: 520px; }
+button, input, textarea { font: inherit; }
+button { border: 0; border-radius: 9px; background: #c5a8ff; color: #21163a; cursor: pointer; font-weight: 700; padding: 9px 12px; }
+button:hover { background: #dcc9ff; }
+button.secondary { background: #2b2831; color: #f5f3f8; }
+button.secondary:hover { background: #3b3744; }
+.app-shell { padding: 24px; }
+header { border-bottom: 1px solid #34313b; margin-bottom: 22px; padding-bottom: 16px; }
+.eyebrow { color: #c5a8ff; font-size: 10px; font-weight: 800; letter-spacing: .14em; margin: 0 0 6px; }
+h1, h2, p { margin-top: 0; } h1 { font-size: 25px; margin-bottom: 6px; } h2 { font-size: 18px; }
+.subtitle, .view > p { color: #b8b2c0; font-size: 13px; line-height: 1.55; margin-bottom: 18px; }
+.stack-form { display: grid; gap: 13px; }
+label { color: #d8d3df; display: grid; font-size: 12px; font-weight: 700; gap: 6px; }
+input, textarea { background: #1b1920; border: 1px solid #494452; border-radius: 8px; color: inherit; outline: none; padding: 10px; resize: vertical; }
+input:focus, textarea:focus { border-color: #c5a8ff; box-shadow: 0 0 0 2px #c5a8ff33; }
+.toolbar { display: flex; gap: 8px; margin-bottom: 14px; }.toolbar input { flex: 1; min-width: 0; }
+.prompt-list { display: grid; gap: 9px; list-style: none; margin: 0; padding: 0; }
+.prompt-card { background: #1b1920; border: 1px solid #34313b; border-radius: 10px; padding: 12px; }
+.prompt-card h3 { font-size: 14px; margin: 0 0 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prompt-preview { color: #b8b2c0; display: -webkit-box; font-size: 12px; line-height: 1.45; margin: 0 0 9px; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.tag { background: #302a3a; border-radius: 999px; color: #d6c4ff; display: inline-block; font-size: 10px; margin: 0 4px 7px 0; padding: 3px 7px; }.card-actions { display: flex; gap: 7px; }.card-actions button { font-size: 11px; padding: 6px 9px; }
+.text-button { background: transparent; color: #c5a8ff; display: block; font-size: 12px; margin: 18px auto 0; }.text-button:hover { background: #2b2534; }
+.empty-state { color: #8f899a; font-size: 13px; padding: 28px 10px; text-align: center; }.status { color: #ffbaa6; font-size: 12px; min-height: 16px; margin: 14px 0 0; }
+dialog { background: #17151b; border: 1px solid #494452; border-radius: 12px; color: inherit; max-width: min(480px, calc(100vw - 28px)); padding: 20px; width: 100%; } dialog::backdrop { background: #000b; }.dialog-title-row { align-items: center; display: flex; justify-content: space-between; }.dialog-title-row h2 { margin: 0; }.icon-button { background: transparent; color: #d8d3df; font-size: 24px; line-height: 1; padding: 0 4px; }.dialog-actions { align-items: center; display: grid; gap: 8px; grid-template-columns: auto 1fr auto auto; }.danger { background: #67353e; color: #ffe9ec; }.danger:hover { background: #80424d; }
+

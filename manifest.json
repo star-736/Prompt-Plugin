@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Prompt Vault",
+  "version": "0.1.0",
+  "description": "An offline, password-protected vault for your image and video prompts.",
+  "permissions": ["storage"],
+  "action": {
+    "default_title": "Prompt Vault",
+    "default_popup": "popup.html"
+  }
+}
+

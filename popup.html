@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Prompt Vault</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header>
+        <p class="eyebrow">PRIVATE PROMPT LIBRARY</p>
+        <h1>Prompt Vault</h1>
+        <p class="subtitle">把灵感安全地存下来，准备好时再取用。</p>
+      </header>
+
+      <section id="setup-view" class="view" hidden>
+        <h2>创建主密码</h2>
+        <p>密码不会保存，也无法找回。请使用一个强且唯一的密码。</p>
+        <form id="setup-form" class="stack-form">
+          <label>主密码<input id="setup-password" type="password" minlength="12" autocomplete="new-password" required /></label>
+          <label>确认主密码<input id="setup-confirm" type="password" minlength="12" autocomplete="new-password" required /></label>
+          <button type="submit">创建并解锁</button>
+        </form>
+      </section>
+
+      <section id="unlock-view" class="view" hidden>
+        <h2>保险箱已锁定</h2>
+        <p>输入主密码以查看和使用你的提示词。</p>
+        <form id="unlock-form" class="stack-form">
+          <label>主密码<input id="unlock-password" type="password" autocomplete="current-password" required autofocus /></label>
+          <button type="submit">解锁</button>
+        </form>
+      </section>
+
+      <section id="vault-view" class="view" hidden>
+        <div class="toolbar">
+          <input id="search" type="search" placeholder="搜索标题、正文或标签" aria-label="搜索提示词" />
+          <button id="new-prompt" class="secondary" type="button">新建</button>
+        </div>
+        <p id="empty-state" class="empty-state" hidden>还没有提示词。把第一个灵感放进来吧。</p>
+        <ul id="prompt-list" class="prompt-list" aria-live="polite"></ul>
+        <button id="lock" class="text-button" type="button">立即锁定</button>
+      </section>
+
+      <dialog id="editor-dialog">
+        <form id="editor-form" class="stack-form" method="dialog">
+          <div class="dialog-title-row"><h2 id="editor-title">新建提示词</h2><button id="close-editor" class="icon-button" type="button" aria-label="关闭">×</button></div>
+          <input id="prompt-id" type="hidden" />
+          <label>标题<input id="prompt-title" maxlength="120" required placeholder="例如：雨夜赛博朋克巷子" /></label>
+          <label>提示词<textarea id="prompt-body" rows="9" maxlength="20000" required placeholder="把你的想法、风格、镜头语言等都记下来…"></textarea></label>
+          <label>标签（用逗号分隔）<input id="prompt-tags" maxlength="300" placeholder="图片, 赛博朋克, 雨夜" /></label>
+          <div class="dialog-actions"><button id="delete-prompt" class="danger" type="button" hidden>删除</button><span></span><button class="secondary" id="cancel-editor" type="button">取消</button><button type="submit">保存</button></div>
+        </form>
+      </dialog>
+
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>
+
