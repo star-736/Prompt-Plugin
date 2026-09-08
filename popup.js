@@ -9,6 +9,7 @@ import {
   disableSite,
   displayTitle,
   enableSite,
+  formatSkillInsert,
   getDraft,
   hasPrivacyLock,
   ignoreSite,
@@ -24,6 +25,7 @@ import {
   saveAsset,
   saveDatabase,
   saveDraft,
+  setAssetCategory,
   setAssetPinned,
   setSortBy,
   sortByFor,
@@ -73,6 +75,7 @@ const state = {
   providerEditId: null,
   packageAssetId: null,
   packageRecord: null,
+  packageCategoryCreating: false,
   aiUnlockAction: null,
   proposalEditingId: null
 };
@@ -98,10 +101,6 @@ function searchIcon() {
 
 function chevronIcon() {
   return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>';
-}
-
-function pinIcon() {
-  return '<svg viewBox="0 0 24 24" aria-hidden="true"><rect class="pin-head" x="6.5" y="3.5" width="11" height="8" rx="4"/><path d="M12 11.5v9.5"/></svg>';
 }
 
 function isPrivateView() {
@@ -208,9 +207,9 @@ async function enableSiteOrigin(origin) {
 
 async function disableSiteOrigin(origin) {
   await commit(disableSite(state.database, origin));
+  await sendBackground({ type: 'sync-sites' });
   const leftover = relatedMatchPatterns(origin).filter((pattern) => !patternsForSites(state.database.settings.inPlace.sites).includes(pattern));
   try { if (leftover.length) await chrome.permissions.remove({ origins: leftover }); } catch { /* 权限可能已撤销。 */ }
-  await sendBackground({ type: 'sync-sites' });
   showToast('已停用就地取用');
 }
 
@@ -257,13 +256,13 @@ function previewFor(asset) {
 function renderAssetList() {
   const assets = assetsFor(state.database, { type: state.activeTab, privacy: activePrivacy(), query: state.search, categoryId: state.categoryId, sortBy: sortByFor(state.database, state.activeTab) });
   const githubCollect = state.activeTab === 'skill' ? '<button class="button button-ghost" type="button" data-action="collect-github-skill">从当前 GitHub 页面收集</button>' : '';
-  const pinBtn = (asset) => asset.privacy === 'normal' ? `<button class="button button-ghost button-small pin-button ${asset.pinned ? 'is-pinned' : ''}" type="button" data-action="toggle-pin" data-id="${asset.id}" aria-label="${asset.pinned ? '取消置顶' : '置顶'}">${pinIcon()}</button>` : '';
+  const pinBtn = (asset) => asset.privacy === 'normal' ? `<button class="button button-ghost button-small pin-button ${asset.pinned ? 'is-pinned' : ''}" type="button" data-action="toggle-pin" data-id="${asset.id}">${asset.pinned ? '已置顶' : '置顶'}</button>` : '';
   if (!assets.length) return `<div class="empty-state"><p>暂无${escapeHtml(emptyName())}</p><div class="empty-actions"><button class="button button-primary" type="button" data-action="new-asset">新建${escapeHtml(emptyName())}</button>${githubCollect}</div></div>`;
   return `<ul class="asset-list">${assets.map((asset) => `<li class="asset-row">
     <button class="asset-open" type="button" data-action="open-asset" data-id="${asset.id}">
       ${asset.type === 'aigc' ? `<span class="asset-aigc-content">${escapeHtml(asset.content)}</span>` : `<span class="asset-title">${escapeHtml(displayTitle(asset))}</span><span class="asset-preview">${escapeHtml(previewFor(asset))}</span>${asset.privacy === 'normal' ? `<span class="asset-meta"><span class="category-badge">${escapeHtml(categoryName(asset.categoryId))}</span></span>` : ''}`}
     </button>
-    <div class="asset-actions">${pinBtn(asset)}<button class="button button-ghost button-small copy-button" type="button" data-action="copy-asset" data-id="${asset.id}">复制</button></div>
+    <div class="asset-actions">${pinBtn(asset)}<button class="button button-ghost button-small copy-button" type="button" data-action="copy-asset" data-id="${asset.id}">复制</button><button class="button button-ghost button-small" type="button" data-action="delete-asset" data-id="${asset.id}">删除</button></div>
   </li>`).join('')}</ul>${githubCollect ? `<div class="library-secondary-action">${githubCollect}</div>` : ''}`;
 }
 
@@ -328,15 +327,15 @@ function renderEditor() {
   const management = existing?.type === 'aigc' ? `<div class="secondary-management">
       <button class="button button-ghost button-small" type="button" data-action="move-asset" data-id="${existing.id}" data-target="${existing.privacy === 'private' ? 'normal' : 'private'}">${existing.privacy === 'private' ? '移出私密库' : '移入私密库'}</button>
       <button class="button button-danger button-small" type="button" data-action="delete-asset" data-id="${existing.id}">永久删除</button>
-    </div>` : existing ? `<div class="secondary-management">${existing.privacy === 'normal' ? `<button class="button button-ghost button-small" type="button" data-action="toggle-pin" data-id="${existing.id}">${existing.pinned ? '取消置顶' : '置顶'}</button>` : ''}<button class="button button-danger button-small" type="button" data-action="delete-asset" data-id="${existing.id}">永久删除</button></div>` : '';
+    </div>` : existing ? `<div class="secondary-management">${existing.privacy === 'normal' ? `<button class="button button-ghost button-small pin-button ${existing.pinned ? 'is-pinned' : ''}" type="button" data-action="toggle-pin" data-id="${existing.id}">${existing.pinned ? '已置顶' : '置顶'}</button>` : ''}<button class="button button-danger button-small" type="button" data-action="delete-asset" data-id="${existing.id}">永久删除</button></div>` : '';
   return `${renderReadOnlyBanner()}${pageHeading(heading, 'editor-back')}<form class="editor-form" id="editor-form">
     ${titleField}
     ${categoryOptions(type, privacy, values.categoryId, state.editor.categoryCreating)}
     <div class="field"><label>${contentLabel}<textarea id="editor-content" class="${isSkill ? 'skill-editor' : ''}" ${isSkill ? '' : 'required'}>${escapeHtml(values.content)}</textarea></label>${contentHelp}</div>
     <div class="editor-footer">
-      <button class="button button-ghost copy-editor" type="button" data-action="copy-editor">复制</button>
+      <button class="button button-ghost button-small copy-editor" type="button" data-action="copy-editor">复制</button>
       <span class="status-line">${existing ? `上次保存 ${new Date(existing.updatedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}` : ''}</span>
-      <button class="button button-primary" type="submit">保存</button>
+      <button class="button button-primary button-small" type="submit">保存</button>
     </div>
     ${management}
   </form>`;
@@ -402,7 +401,7 @@ function renderPackageDetail() {
   const asset = state.database.assets.find((item) => item.id === state.packageAssetId);
   const record = state.packageRecord;
   if (!asset || !record) return `${pageHeading('Skill 文件', 'library')}<div class="empty-state"><p>无法读取本地 Skill 文件。</p></div>`;
-  return `${renderReadOnlyBanner()}${pageHeading(asset.title, 'library')}<section class="section-card package-source"><h2>GitHub Skill</h2><p>${escapeHtml(asset.skillPackage.source.repository)} · ${escapeHtml(asset.skillPackage.source.directory)} · ${escapeHtml(asset.skillPackage.source.commit.slice(0, 7))}</p><div class="section-actions"><button class="button button-ghost button-small" type="button" data-action="update-github-skill" data-id="${asset.id}">检查 GitHub 更新</button><button class="button button-ghost button-small" type="button" data-action="toggle-pin" data-id="${asset.id}">${asset.pinned ? '取消置顶' : '置顶'}</button><button class="button button-ghost button-small" type="button" data-action="copy-asset" data-id="${asset.id}">复制 SKILL.md</button></div></section><div class="package-tree">${record.files.map((file) => `<details class="package-file" ${file.path === 'SKILL.md' ? 'open' : ''}><summary>${escapeHtml(file.path)} <span>${Math.ceil(file.size / 1024)} KB</span></summary>${isTextFile(file.path, file.contentType) ? `<p class="script-note">${/\.(py|sh|bash|zsh|ps1|js|mjs|cjs)$/i.test(file.path) ? '仅保存，不执行。' : '只读文本。'}</p><pre>${escapeHtml(decodePackageText(file))}</pre>` : '<p class="script-note">二进制资源：仅保存，不执行。</p>'}</details>`).join('')}</div>`;
+  return `${renderReadOnlyBanner()}${pageHeading(asset.title, 'library')}<section class="section-card package-source"><h2>GitHub Skill</h2><p>${escapeHtml(asset.skillPackage.source.repository)} · ${escapeHtml(asset.skillPackage.source.directory)} · ${escapeHtml(asset.skillPackage.source.commit.slice(0, 7))}</p><div class="section-actions"><button class="button button-ghost button-small" type="button" data-action="update-github-skill" data-id="${asset.id}">检查 GitHub 更新</button><button class="button button-ghost button-small pin-button ${asset.pinned ? 'is-pinned' : ''}" type="button" data-action="toggle-pin" data-id="${asset.id}">${asset.pinned ? '已置顶' : '置顶'}</button><button class="button button-ghost button-small" type="button" data-action="copy-asset" data-id="${asset.id}">复制 SKILL.md</button><button class="button button-ghost button-small" type="button" data-action="delete-asset" data-id="${asset.id}">永久删除</button></div></section><div class="package-category">${categoryOptions('skill', 'normal', asset.categoryId, state.packageCategoryCreating)}</div><div class="package-tree">${record.files.map((file) => `<details class="package-file" ${file.path === 'SKILL.md' ? 'open' : ''}><summary>${escapeHtml(file.path)} <span>${Math.ceil(file.size / 1024)} KB</span></summary>${isTextFile(file.path, file.contentType) ? `${/\.(py|sh|bash|zsh|ps1|js|mjs|cjs)$/i.test(file.path) ? '<p class="script-note">仅保存，不执行。</p>' : ''}<pre>${escapeHtml(decodePackageText(file))}</pre>` : '<p class="script-note">二进制资源：仅保存，不执行。</p>'}</details>`).join('')}</div>`;
 }
 
 function renderLockReset() {
@@ -505,6 +504,40 @@ async function createEditorCategory() {
     showToast('分类已新建并选中');
   } catch (error) {
     showToast(error.message || '新建分类失败。');
+  }
+}
+
+async function beginPackageCategoryCreate() {
+  state.packageCategoryCreating = true;
+  render();
+  document.querySelector('#editor-new-category')?.focus();
+}
+
+async function createPackageCategory() {
+  const name = document.querySelector('#editor-new-category')?.value ?? '';
+  try {
+    const created = createCategory(state.database, 'skill', name);
+    await commit(setAssetCategory(created.database, state.packageAssetId, created.category.id));
+    state.packageCategoryCreating = false;
+    render();
+    showToast('分类已新建并选中');
+  } catch (error) {
+    showToast(error.message || '新建分类失败。');
+  }
+}
+
+async function updatePackageCategory(categoryId) {
+  const asset = assetById(state.packageAssetId);
+  if (!asset) return;
+  const nextId = categoryId || null;
+  if ((asset.categoryId || null) === nextId && asset.categorySource === 'manual') return;
+  try {
+    await commit(setAssetCategory(state.database, asset.id, nextId));
+    render();
+    showToast('分类已更新');
+  } catch (error) {
+    showToast(error.message || '分类更新失败。');
+    render();
   }
 }
 
@@ -700,6 +733,7 @@ async function openAsset(asset) {
   if (asset.skillPackage?.packageId) {
     state.packageAssetId = asset.id;
     state.packageRecord = await getPackage(asset.skillPackage.packageId);
+    state.packageCategoryCreating = false;
     state.view = 'package-detail';
     render();
     return;
@@ -819,11 +853,21 @@ async function handleClick(event) {
   if (action === 'editor-back') return returnFromEditor();
   if (action === 'new-asset') return openEditor();
   if (action === 'open-asset') return openAsset(assetById(button.dataset.id));
-  if (action === 'copy-asset') return copyText(assetById(button.dataset.id)?.content ?? '', { recordId: button.dataset.id });
-  if (action === 'copy-editor') return state.editor?.assetId ? copyText(editorValues().content, { recordId: state.editor.assetId }) : copyText(editorValues().content);
-  if (action === 'new-category-from-editor') return beginEditorCategoryCreate();
-  if (action === 'create-category-from-editor') return createEditorCategory();
-  if (action === 'cancel-category-from-editor') { state.editor.categoryCreating = false; return render(); }
+  if (action === 'copy-asset') {
+    const asset = assetById(button.dataset.id);
+    return copyText(formatSkillInsert(asset?.content ?? '', asset?.type), { recordId: button.dataset.id });
+  }
+  if (action === 'copy-editor') {
+    const content = formatSkillInsert(editorValues().content, state.editor?.type);
+    return state.editor?.assetId ? copyText(content, { recordId: state.editor.assetId }) : copyText(content);
+  }
+  if (action === 'new-category-from-editor') return state.view === 'package-detail' ? beginPackageCategoryCreate() : beginEditorCategoryCreate();
+  if (action === 'create-category-from-editor') return state.view === 'package-detail' ? createPackageCategory() : createEditorCategory();
+  if (action === 'cancel-category-from-editor') {
+    if (state.view === 'package-detail') state.packageCategoryCreating = false;
+    else if (state.editor) state.editor.categoryCreating = false;
+    return render();
+  }
   if (action === 'toggle-category-menu') { state.categoryMenuOpen = !state.categoryMenuOpen; state.sortMenuOpen = false; return render(); }
   if (action === 'toggle-sort-menu') { state.sortMenuOpen = !state.sortMenuOpen; state.categoryMenuOpen = false; return render(); }
   if (action === 'set-sort') { try { await commit(setSortBy(state.database, state.activeTab, button.dataset.sort)); state.sortMenuOpen = false; render(); } catch (error) { showToast(error.message || '排序切换失败。'); } return; }
@@ -992,6 +1036,10 @@ app.addEventListener('input', (event) => {
   if (event.target.closest('#editor-form')) void persistEditorDraft();
 });
 app.addEventListener('change', (event) => {
+  if (event.target.id === 'editor-category' && state.view === 'package-detail') {
+    void updatePackageCategory(event.target.value || null);
+    return;
+  }
   if (event.target.closest('#editor-form')) void persistEditorDraft();
   if (event.target.id === 'ai-enabled') {
     const next = updateAiSettings(state.database, { enabled: event.target.checked });

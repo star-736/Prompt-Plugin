@@ -119,6 +119,21 @@ export function originCoveredBySites(origin, sites) {
   return relatedMatchPatterns(origin).some((pattern) => granted.has(pattern));
 }
 
+/** 后台取用请求与页面脚本保活：站点仍在启用列表且总开关打开。 */
+export function inPlaceAllowsOrigin(inPlace, origin) {
+  return Boolean(origin && inPlace?.enabled && originCoveredBySites(origin, inPlace?.sites));
+}
+
+/**
+ * 已注入标签页的实时动作。
+ * destroy：站点停用或总开关关闭，立刻卸载。
+ * settings：站点仍覆盖，只同步 // 触发等开关。
+ */
+export function livePaletteUpdate(inPlace, origin) {
+  if (!inPlaceAllowsOrigin(inPlace, origin)) return { action: 'destroy' };
+  return { action: 'settings', enabled: true, triggerEnabled: inPlace?.triggerEnabled !== false };
+}
+
 export function patternsForSites(sites) {
   return unique((Array.isArray(sites) ? sites : []).flatMap((origin) => relatedMatchPatterns(origin)));
 }

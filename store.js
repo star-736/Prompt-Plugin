@@ -145,6 +145,14 @@ export function displayTitle(asset) {
   const fallback = asset.type === 'aigc' ? '未命名 AIGC Prompt' : '未命名 Prompt';
   return first.length > 32 ? `${first.slice(0, 32)}…` : first || fallback;
 }
+
+// 仅取用/复制时加前缀，不写入存储。空前缀不加换行；空内容沿用原样（插入侧会跳过）。
+export const SKILL_INSERT_PREFIX = '基于以下 skill 辅助我解决问题';
+export function formatSkillInsert(text, type) {
+  const content = String(text ?? '');
+  if (type !== 'skill' || !content || !SKILL_INSERT_PREFIX) return content;
+  return `${SKILL_INSERT_PREFIX}\n${content}`;
+}
 export function validateAsset(input) {
   const type = input.type; const privacy = input.privacy ?? 'normal'; scopeFor(type, privacy);
   const content = String(input.content ?? ''); if (!content.trim()) throw new Error('内容不能为空。');
@@ -238,6 +246,15 @@ export function setAssetPinned(database, id, pinned) {
   if (next.assets[index].privacy !== 'normal') throw new Error('私密库不提供置顶。');
   next.assets[index] = { ...next.assets[index], pinned: Boolean(pinned) }; return next;
 }
+export function setAssetCategory(database, id, categoryId, { now = Date.now() } = {}) {
+  const next = normalizeDatabase(clone(database)); const index = next.assets.findIndex((asset) => asset.id === id); if (index < 0) throw new Error('找不到该条目。');
+  const asset = next.assets[index];
+  if (!['generic', 'skill'].includes(asset.type) || asset.privacy !== 'normal') throw new Error('只有普通库的 Prompt 和 Skill 可以分类。');
+  const nextCategoryId = categoryId || null;
+  if (nextCategoryId && !next.categories.some((category) => category.id === nextCategoryId && category.scope === asset.type)) throw new Error('找不到该分类。');
+  next.assets[index] = { ...asset, categoryId: nextCategoryId, categorySource: 'manual', updatedAt: now };
+  return next;
+}
 export function usageSummary(database, now = Date.now()) {
   const log = database.usage?.log ?? []; const within = (days) => log.filter((time) => now - time <= days * 86400000).length;
   return { week: within(7), month: within(30), total: database.assets.reduce((sum, asset) => sum + (asset.useCount ?? 0), 0), sites: database.settings?.inPlace?.sites?.length ?? 0 };
@@ -298,10 +315,12 @@ export function mergeBackup(database, backupValue, { now = Date.now(), idFactory
 export function saveGithubSkillAsset(database, packageInfo, { now = Date.now(), id = newId(), updateAssetId = null } = {}) {
   const next = normalizeDatabase(clone(database)); const metadata = parseSkillMetadata(packageInfo.skillContent); const source = packageInfo.source;
   const duplicate = next.assets.find((asset) => asset.type === 'skill' && asset.skillPackage?.source?.repository === source.repository && asset.skillPackage?.source?.directory === source.directory && asset.skillPackage?.source?.commit === source.commit);
-  if (duplicate && duplicate.id !== updateAssetId) return { database: next, asset: duplicate, duplicate: true };
+  if (duplicate && duplicate.id !== updateAssetId) return { database: next, asset: duplicate, duplicate: true, queued: false };
   const index = updateAssetId ? next.assets.findIndex((asset) => asset.id === updateAssetId) : -1; if (updateAssetId && index < 0) throw new Error('找不到要更新的 Skill。'); const current = index >= 0 ? next.assets[index] : null;
   const asset = { ...(current ?? { id, createdAt: now, categoryId: null, categorySource: 'none' }), type: 'skill', privacy: 'normal', title: metadata.name, content: packageInfo.skillContent, skillDescription: metadata.description, skillPackage: { packageId: packageInfo.id, source, fileCount: packageInfo.fileCount, totalSize: packageInfo.totalSize }, updatedAt: now };
-  if (index >= 0) next.assets[index] = asset; else next.assets.push(asset); return { database: next, asset, duplicate: false };
+  if (index >= 0) next.assets[index] = asset; else next.assets.push(asset);
+  enqueueIfEligible(next, current, asset, now);
+  return { database: next, asset, duplicate: false, queued: next.ai.queue.some((entry) => entry.assetId === asset.id) };
 }
 export async function loadDatabase(storage = chrome.storage.local) { const result = await storage.get(APP_STORAGE_KEY); return normalizeDatabase(result[APP_STORAGE_KEY]); }
 export const READ_ONLY_MESSAGE = '数据来自更新版本的 FutureContext，请升级扩展。当前为只读，所有修改都不会保存。';

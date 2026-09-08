@@ -13,6 +13,7 @@ import {
   deleteCategory,
   displayTitle,
   encryptProviderKey,
+  formatSkillInsert,
   getDraft,
   hasPrivacyLock,
   isReadOnlyDatabase,
@@ -25,8 +26,10 @@ import {
   saveAsset,
   saveGithubSkillAsset,
   saveDraft,
+  setAssetCategory,
   setAssetPinned,
   setPrivacyPassword,
+  SKILL_INSERT_PREFIX,
   updateAiSettings,
   verifyPrivacyPassword
 } from '../store.js';
@@ -64,6 +67,18 @@ test('asset validation accepts a title-less generic Prompt and preserves Skill v
   const savedAigc = saveAsset(savedSkill.database, { type: 'aigc', privacy: 'private', content: 'silver robot in a misty forest', categoryId: 'ignored' }, { now: 2, id: 'aigc-1' });
   assert.equal(savedAigc.asset.categoryId, null);
   assert.throws(() => saveAsset(savedAigc.database, { type: 'skill', privacy: 'private', content: skill }), /只有 AIGC/);
+});
+
+test('formatSkillInsert prefixes skill payloads only and does not mutate saved assets', () => {
+  assert.equal(formatSkillInsert(skill, 'skill'), `${SKILL_INSERT_PREFIX}\n${skill}`);
+  assert.equal(formatSkillInsert(skill, 'generic'), skill);
+  assert.equal(formatSkillInsert(skill, 'aigc'), skill);
+  assert.equal(formatSkillInsert('', 'skill'), '');
+  const saved = saveAsset(createEmptyDatabase(), { type: 'skill', content: skill }, { now: 1, id: 'skill-fmt' });
+  assert.equal(saved.asset.content, skill);
+  assert.equal(saved.asset.content.includes(SKILL_INSERT_PREFIX), false);
+  const github = saveGithubSkillAsset(createEmptyDatabase(), { id: 'package-fmt', skillContent: skill, fileCount: 2, totalSize: 120, source: { repository: 'acme/demo', directory: 'skills/review', commit: 'abc', defaultBranch: 'main', url: 'https://github.com/acme/demo/blob/main/skills/review/SKILL.md' } }, { id: 'skill-gh-fmt' });
+  assert.equal(github.asset.content, skill);
 });
 
 test('provider keys are encrypted and become inaccessible after privacy password reset', async () => {
@@ -117,6 +132,64 @@ test('GitHub Skill direct update preserves its local category', () => {
   assert.equal(second.asset.skillPackage.packageId, 'package-2');
   assert.equal(second.asset.categoryId, 'work');
   assert.equal(second.asset.categorySource, 'manual');
+});
+
+test('GitHub Skill collect stays uncategorized and does not use the directory name', () => {
+  const packageInfo = { id: 'package-1', skillContent: skill, fileCount: 2, totalSize: 120, source: { repository: 'acme/demo', directory: 'skills/review', commit: 'abc', defaultBranch: 'main', url: 'https://github.com/acme/demo/blob/main/skills/review/SKILL.md' } };
+  const saved = saveGithubSkillAsset(createEmptyDatabase(), packageInfo, { id: 'skill-1' });
+  assert.equal(saved.asset.categoryId, null);
+  assert.equal(saved.asset.categorySource, 'none');
+  assert.equal(saved.queued, false);
+  assert.equal(saved.database.categories.length, 0);
+});
+
+test('GitHub Skill first save queues AI categorization when background AI is enabled', () => {
+  const packageInfo = { id: 'package-1', skillContent: skill, fileCount: 2, totalSize: 120, source: { repository: 'acme/demo', directory: 'skills/review', commit: 'abc', defaultBranch: 'main', url: 'https://github.com/acme/demo/blob/main/skills/review/SKILL.md' } };
+  const database = updateAiSettings(createEmptyDatabase(), { enabled: true });
+  const saved = saveGithubSkillAsset(database, packageInfo, { now: 10, id: 'skill-1' });
+  assert.equal(saved.queued, true);
+  assert.deepEqual(saved.database.ai.queue.map((item) => item.assetId), ['skill-1']);
+  assert.equal(saved.asset.categoryId, null);
+  assert.equal(saved.asset.content, skill);
+});
+
+test('AI can categorize a GitHub Skill without changing YAML', () => {
+  const packageInfo = { id: 'package-1', skillContent: skill, fileCount: 2, totalSize: 120, source: { repository: 'acme/demo', directory: 'skills/review', commit: 'abc', defaultBranch: 'main', url: 'https://github.com/acme/demo/blob/main/skills/review/SKILL.md' } };
+  let database = saveGithubSkillAsset(createEmptyDatabase(), packageInfo, { id: 'skill-1' }).database;
+  database = createCategory(database, 'skill', '邮件', { id: 'mail' }).database;
+  const result = applyAiAssetResult(database, 'skill-1', { title: 'AI 标题', categoryName: '邮件' });
+  assert.equal(result.assets[0].categoryId, 'mail');
+  assert.equal(result.assets[0].categorySource, 'ai');
+  assert.equal(result.assets[0].title, 'Email reviewer');
+  assert.equal(result.assets[0].content, skill);
+});
+
+test('GitHub Skill duplicate save does not queue again', () => {
+  const packageInfo = { id: 'package-1', skillContent: skill, fileCount: 2, totalSize: 120, source: { repository: 'acme/demo', directory: 'skills/review', commit: 'abc', defaultBranch: 'main', url: 'https://github.com/acme/demo/blob/main/skills/review/SKILL.md' } };
+  let database = updateAiSettings(createEmptyDatabase(), { enabled: true });
+  database = saveGithubSkillAsset(database, packageInfo, { id: 'skill-1' }).database;
+  const duplicate = saveGithubSkillAsset(database, { ...packageInfo, id: 'package-2' }, { id: 'skill-2' });
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(duplicate.queued, false);
+  assert.equal(duplicate.database.ai.queue.length, 1);
+});
+
+test('setAssetCategory writes a manual category without changing Skill content', () => {
+  const packageInfo = { id: 'package-1', skillContent: skill, fileCount: 2, totalSize: 120, source: { repository: 'acme/demo', directory: 'skills/review', commit: 'abc', defaultBranch: 'main', url: 'https://github.com/acme/demo/blob/main/skills/review/SKILL.md' } };
+  let database = createEmptyDatabase();
+  database = createCategory(database, 'skill', '工作', { id: 'work' }).database;
+  database = saveGithubSkillAsset(database, packageInfo, { now: 1, id: 'skill-1' }).database;
+  const originalContent = database.assets[0].content;
+  const originalPackage = database.assets[0].skillPackage;
+  const updated = setAssetCategory(database, 'skill-1', 'work', { now: 2 });
+  assert.equal(updated.assets[0].categoryId, 'work');
+  assert.equal(updated.assets[0].categorySource, 'manual');
+  assert.equal(updated.assets[0].updatedAt, 2);
+  assert.equal(updated.assets[0].content, originalContent);
+  assert.deepEqual(updated.assets[0].skillPackage, originalPackage);
+  const cleared = setAssetCategory(updated, 'skill-1', null, { now: 3 });
+  assert.equal(cleared.assets[0].categoryId, null);
+  assert.equal(cleared.assets[0].categorySource, 'manual');
 });
 
 test('prompt and skill content is preserved verbatim after validation', () => {

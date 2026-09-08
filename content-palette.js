@@ -2,7 +2,6 @@
   try { window.__futureContextPalette?.destroy?.(); } catch { /* 扩展重载后旧脚本上下文已失效。 */ }
 
   const SHORTCUT_LABEL = 'Alt+Shift+F';
-  const PIN_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect class="pin-head" x="6.5" y="3.5" width="11" height="8" rx="4"/><path d="M12 11.5v9.5"/></svg>';
   const unbind = [];
   let host = null;
   let shadow = null;
@@ -62,7 +61,7 @@
     (document.body || document.documentElement).appendChild(host);
     shadow = host.attachShadow({ mode: 'open' });
     const style = document.createElement('style');
-    style.textContent = `.fc-palette{pointer-events:auto;background:#fff;border:1px solid #dfe5ed;border-radius:10px;box-shadow:0 12px 30px #26384a18;font-family:Inter,"Microsoft YaHei UI",system-ui,sans-serif;overflow:hidden;position:fixed}.fc-search{width:100%;border:0;border-bottom:1px solid #edf0f4;box-sizing:border-box;font-size:13px;outline:0;padding:10px 12px}.fc-list{max-height:320px;overflow:auto;padding:4px}.fc-item{align-items:flex-start;background:transparent;border:0;border-radius:6px;color:#273141;cursor:pointer;display:grid;gap:2px;padding:8px 10px;text-align:left;width:100%}.fc-item.is-active{background:#edf3fa;color:#41668f}.fc-type{color:#8b96a5;font-size:11px}.fc-title{font-size:13px;font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.fc-preview{color:#8994a2;font-size:11px;line-height:1.4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.fc-pin{color:#5c7fa9;height:12px;position:absolute;right:10px;top:10px;width:12px;fill:none;stroke:currentColor;stroke-linecap:round;stroke-linejoin:round;stroke-width:1.7}.fc-pin .pin-head{fill:currentColor;fill-opacity:.18}.fc-item-wrap{position:relative}.fc-empty{color:#8b96a5;font-size:12px;line-height:1.5;padding:14px 12px}.fc-empty-hint{color:#9aa4b2;font-size:11px;margin-top:4px}`;
+    style.textContent = `.fc-palette{pointer-events:auto;background:#fff;border:1px solid #dfe5ed;border-radius:10px;box-shadow:0 12px 30px #26384a18;font-family:Inter,"Microsoft YaHei UI",system-ui,sans-serif;overflow:hidden;position:fixed}.fc-search{width:100%;border:0;border-bottom:1px solid #edf0f4;box-sizing:border-box;font-size:13px;outline:0;padding:10px 12px}.fc-list{max-height:320px;overflow:auto;padding:4px}.fc-item{align-items:flex-start;background:transparent;border:0;border-radius:6px;color:#273141;cursor:pointer;display:grid;gap:2px;padding:8px 10px;text-align:left;width:100%}.fc-item.is-active{background:#edf3fa;color:#41668f}.fc-type{color:#8b96a5;font-size:11px}.fc-title{font-size:13px;font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.fc-preview{color:#8994a2;font-size:11px;line-height:1.4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.fc-pin{color:#5c7fa9;font-size:10px;font-weight:500;margin-left:6px}.fc-item-wrap{position:relative}.fc-empty{color:#8b96a5;font-size:12px;line-height:1.5;padding:14px 12px}.fc-empty-hint{color:#9aa4b2;font-size:11px;margin-top:4px}`;
     shadow.appendChild(style);
     panel = document.createElement('div');
     panel.className = 'fc-palette';
@@ -236,7 +235,7 @@
     if (!panel) return;
     const body = !items.length
       ? `<div class="fc-empty">没有匹配的资产<div class="fc-empty-hint">可在 FutureContext 弹窗中新建</div></div>`
-      : `<div class="fc-list">${items.map((item, i) => `<div class="fc-item-wrap">${item.pinned ? PIN_SVG.replace('<svg', '<svg class="fc-pin"') : ''}<button type="button" class="fc-item ${i === selected ? 'is-active' : ''}" data-i="${i}"><span class="fc-type">${item.typeLabel}</span><span class="fc-title">${escapeHtml(item.title)}</span><span class="fc-preview">${escapeHtml(item.preview)}</span></button></div>`).join('')}</div>`;
+      : `<div class="fc-list">${items.map((item, i) => `<div class="fc-item-wrap"><button type="button" class="fc-item ${i === selected ? 'is-active' : ''}" data-i="${i}"><span class="fc-type">${item.typeLabel}${item.pinned ? '<span class="fc-pin">置顶</span>' : ''}</span><span class="fc-title">${escapeHtml(item.title)}</span><span class="fc-preview">${escapeHtml(item.preview)}</span></button></div>`).join('')}</div>`;
     if (mode === 'standalone') {
       let search = panel.querySelector('.fc-search');
       if (!search) {
@@ -515,6 +514,8 @@
     unbind.push(() => targetEl.removeEventListener(type, handler, opts));
   }
 
+  let armed = false;
+
   function destroy() {
     close();
     unbind.splice(0).forEach((off) => { try { off(); } catch { /* 旧监听可能已失效 */ } });
@@ -525,17 +526,34 @@
     panel = null;
     toastHost = null;
     toastShadow = null;
+    armed = false;
     if (window.__futureContextPalette?.destroy === destroy) delete window.__futureContextPalette;
   }
 
-  void bg('palette-settings', {}, true).then((s) => { if (s) triggerEnabled = s.triggerEnabled !== false; });
-  bind(document, 'input', onDocInput, true);
-  bind(document, 'keyup', onKeyUp, true);
-  bind(document, 'keydown', onDocKeyDown, true);
-  bind(document, 'beforeinput', onBeforeInput, true);
-  bind(document, 'compositionend', onDocInput, true);
-  bind(document, 'selectionchange', onSelectionChange);
+  function arm() {
+    if (armed) return;
+    bind(document, 'input', onDocInput, true);
+    bind(document, 'keyup', onKeyUp, true);
+    bind(document, 'keydown', onDocKeyDown, true);
+    bind(document, 'beforeinput', onBeforeInput, true);
+    bind(document, 'compositionend', onDocInput, true);
+    bind(document, 'selectionchange', onSelectionChange);
+    armed = true;
+    window.__futureContextPalette = { destroy, openFromShortcut };
+  }
+
+  function applySettings(s) {
+    if (!s) return;
+    if (s.enabled === false) {
+      destroy();
+      return;
+    }
+    triggerEnabled = s.triggerEnabled !== false;
+    arm();
+  }
+
   function openFromShortcut() {
+    if (!armed) return false;
     if (!document.hasFocus()) return false;
     const el = editableFrom(document.activeElement);
     if (!el) {
@@ -545,12 +563,22 @@
     void openStandalone(el);
     return true;
   }
-  const onMessage = (msg) => {
+
+  function onMessage(msg) {
+    if (msg?.type === 'fc-destroy') { destroy(); return; }
+    if (msg?.type === 'fc-settings') { applySettings(msg); return; }
+    if (!armed) return;
     if (msg.type === 'fc-ping') return;
     if (msg.type === 'fc-toast') showToast(msg.text);
     if (msg.type === 'fc-open-palette') openFromShortcut();
-  };
+  }
+
+  if (globalThis.__fcPaletteOnMessage) {
+    try { chrome.runtime.onMessage.removeListener(globalThis.__fcPaletteOnMessage); } catch { /* 旧监听可能已失效。 */ }
+  }
+  globalThis.__fcPaletteOnMessage = onMessage;
   chrome.runtime.onMessage.addListener(onMessage);
-  unbind.push(() => chrome.runtime.onMessage.removeListener(onMessage));
-  window.__futureContextPalette = { destroy, openFromShortcut };
+
+  arm();
+  void bg('palette-settings', {}, true).then((s) => applySettings(s));
 })();

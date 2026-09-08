@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { normalizeSiteOrigin, sitePattern, siteHost, originOfUrl, shouldTrigger, slashCompletesTrigger, inlineAnchorQuery, INLINE_DISMISS_MS, SHORTCUT_LABEL, SITE_PRESETS, isPromptableSite, relatedMatchPatterns, originCoveredBySites, paletteTypesForUrl } from '../in-place.js';
+import { normalizeSiteOrigin, sitePattern, siteHost, originOfUrl, shouldTrigger, slashCompletesTrigger, inlineAnchorQuery, INLINE_DISMISS_MS, SHORTCUT_LABEL, SITE_PRESETS, isPromptableSite, relatedMatchPatterns, originCoveredBySites, inPlaceAllowsOrigin, livePaletteUpdate, paletteTypesForUrl } from '../in-place.js';
+import { createEmptyDatabase, disableSite, enableSite, updateInPlaceSettings } from '../store.js';
 
 test('normalizeSiteOrigin accepts bare host and full https URL', () => {
   assert.equal(normalizeSiteOrigin('chatgpt.com'), 'https://chatgpt.com');
@@ -99,4 +100,35 @@ test('paletteTypesForUrl hides AIGC on chat pages and is AIGC-only on Grok imagi
   assert.deepEqual(paletteTypesForUrl('https://grok.com/imagine/foo'), ['aigc']);
   assert.deepEqual(paletteTypesForUrl('https://www.grok.com/imagine'), ['aigc']);
   assert.deepEqual(paletteTypesForUrl('https://chatgpt.com/'), ['generic', 'skill']);
+});
+
+test('inPlaceAllowsOrigin is the live palette gate for coverage and master switch', () => {
+  const inPlace = { enabled: true, triggerEnabled: true, sites: ['https://chatgpt.com'] };
+  assert.equal(inPlaceAllowsOrigin(inPlace, 'https://chatgpt.com'), true);
+  assert.equal(inPlaceAllowsOrigin(inPlace, 'https://chat.openai.com'), true);
+  assert.equal(inPlaceAllowsOrigin(inPlace, 'https://www.douyin.com'), false);
+  assert.equal(inPlaceAllowsOrigin({ ...inPlace, enabled: false }, 'https://chatgpt.com'), false);
+  assert.equal(inPlaceAllowsOrigin(inPlace, null), false);
+});
+
+test('livePaletteUpdate destroys when uncovered, keeps script when only // trigger flips', () => {
+  const inPlace = { enabled: true, triggerEnabled: true, sites: ['https://chatgpt.com'] };
+  assert.deepEqual(livePaletteUpdate(inPlace, 'https://chatgpt.com'), { action: 'settings', enabled: true, triggerEnabled: true });
+  assert.deepEqual(livePaletteUpdate({ ...inPlace, triggerEnabled: false }, 'https://chatgpt.com'), { action: 'settings', enabled: true, triggerEnabled: false });
+  assert.deepEqual(livePaletteUpdate({ ...inPlace, enabled: false }, 'https://chatgpt.com'), { action: 'destroy' });
+  assert.deepEqual(livePaletteUpdate(inPlace, 'https://www.douyin.com'), { action: 'destroy' });
+  assert.deepEqual(livePaletteUpdate(inPlace, null), { action: 'destroy' });
+});
+
+test('disabling a stored site or the master switch drops the live palette gate', () => {
+  let database = enableSite(createEmptyDatabase(), 'https://chatgpt.com');
+  assert.equal(inPlaceAllowsOrigin(database.settings.inPlace, 'https://chatgpt.com'), true);
+  database = disableSite(database, 'https://chatgpt.com');
+  assert.equal(inPlaceAllowsOrigin(database.settings.inPlace, 'https://chatgpt.com'), false);
+  assert.equal(livePaletteUpdate(database.settings.inPlace, 'https://chatgpt.com').action, 'destroy');
+  database = updateInPlaceSettings(enableSite(createEmptyDatabase(), 'https://claude.ai'), { enabled: false });
+  assert.equal(inPlaceAllowsOrigin(database.settings.inPlace, 'https://claude.ai'), false);
+  assert.equal(livePaletteUpdate(database.settings.inPlace, 'https://claude.ai').action, 'destroy');
+  database = updateInPlaceSettings(enableSite(createEmptyDatabase(), 'https://claude.ai'), { triggerEnabled: false });
+  assert.deepEqual(livePaletteUpdate(database.settings.inPlace, 'https://claude.ai'), { action: 'settings', enabled: true, triggerEnabled: false });
 });

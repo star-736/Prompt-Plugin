@@ -7,6 +7,7 @@ import {
   categoriesFor,
   decryptProviderKey,
   displayTitle,
+  formatSkillInsert,
   isReadOnlyDatabase,
   loadDatabase,
   paletteAssets,
@@ -22,7 +23,7 @@ import {
 import { buildAssetOrganizationPrompt, buildGroupingPrompt, buildStructurePrompt, chatCompletion, parseAssetResult, parseGroups } from './ai-organizer.js';
 import { checkGitHubSkillUpdate, collectGitHubSkill, githubSkillUrlError, inspectGitHubSkillUrl, skillContextFromPage } from './github-skill.js';
 import { deletePackage, putPackage } from './package-store.js';
-import { originCoveredBySites, originOfUrl, PALETTE_SCRIPT_FILE, PALETTE_SCRIPT_ID, paletteTypesForUrl, patternsForSites } from './in-place.js';
+import { inPlaceAllowsOrigin, livePaletteUpdate, originOfUrl, PALETTE_SCRIPT_FILE, PALETTE_SCRIPT_ID, paletteTypesForUrl, patternsForSites } from './in-place.js';
 
 const SESSION_KEY = 'futurecontext.ai-session';
 const AI_ALARM = 'futurecontext.ai-queue';
@@ -49,10 +50,38 @@ async function grantedMatches(database) {
   const checks = await Promise.all(patterns.map((pattern) => permissionGranted([pattern])));
   return patterns.filter((_, index) => checks[index]);
 }
+async function broadcastPaletteMessage(tabId, message) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: (msg) => { globalThis.__fcPaletteOnMessage?.(msg); },
+      args: [message]
+    });
+  } catch {
+    try { await chrome.tabs.sendMessage(tabId, message); } catch { /* 标签没有页面代码，或权限已收回。 */ }
+  }
+}
+async function liveUpdatePaletteTabs(inPlace, queryPatterns) {
+  const patterns = [...new Set((queryPatterns ?? []).filter(Boolean))];
+  if (!patterns.length) return;
+  let tabs = [];
+  try { tabs = await chrome.tabs.query({ url: patterns }); } catch { return; }
+  await Promise.all((tabs ?? []).map(async (tab) => {
+    if (!tab.id) return;
+    const update = livePaletteUpdate(inPlace, originOfUrl(tab.url ?? ''));
+    const message = update.action === 'destroy'
+      ? { type: 'fc-destroy' }
+      : { type: 'fc-settings', enabled: update.enabled, triggerEnabled: update.triggerEnabled };
+    await broadcastPaletteMessage(tab.id, message);
+  }));
+}
 async function syncContentScripts() {
   const database = await loadDatabase();
   const matches = await grantedMatches(database);
-  const existing = await chrome.scripting.getRegisteredContentScripts({ ids: [PALETTE_SCRIPT_ID] });
+  const existing = await chrome.scripting.getRegisteredContentScripts({ ids: [PALETTE_SCRIPT_ID] }).catch(() => []);
+  const previousMatches = existing[0]?.matches ?? [];
+  const queryPatterns = [...new Set([...previousMatches, ...matches, ...patternsForSites(database.settings.inPlace.sites)])];
+  await liveUpdatePaletteTabs(database.settings.inPlace, queryPatterns);
   if (!matches.length) { if (existing.length) await chrome.scripting.unregisterContentScripts({ ids: [PALETTE_SCRIPT_ID] }); return { sites: 0 }; }
   const script = { id: PALETTE_SCRIPT_ID, js: [PALETTE_SCRIPT_FILE], matches, runAt: 'document_idle', allFrames: true, persistAcrossSessions: true };
   if (existing.length) await chrome.scripting.updateContentScripts([script]); else await chrome.scripting.registerContentScripts([script]);
@@ -83,7 +112,7 @@ async function openPaletteInActiveTab() {
   const origin = originOfUrl(tab.url ?? '');
   const database = await loadDatabase();
   const inPlace = database.settings.inPlace;
-  const covered = Boolean(origin && inPlace.enabled && originCoveredBySites(origin, inPlace.sites));
+  const covered = inPlaceAllowsOrigin(inPlace, origin);
   try {
     await invokeOpenPalette(tab.id);
     return;
@@ -140,21 +169,24 @@ function paletteSummary(asset) {
   const preview = (asset.type === 'skill' && asset.skillDescription ? asset.skillDescription : asset.content).replace(/\s+/g, ' ').trim();
   return { id: asset.id, type: asset.type, typeLabel: paletteLabels[asset.type] ?? asset.type, title: displayTitle(asset), preview: preview.slice(0, 160), pinned: Boolean(asset.pinned) };
 }
-async function palettePageUrl(sender) {
-  if (sender?.tab?.url) return sender.tab.url;
-  return (await activeTab())?.url ?? '';
+function senderPageUrl(sender) {
+  return sender?.tab?.url || sender?.url || '';
+}
+function senderOrigin(sender) {
+  return originOfUrl(senderPageUrl(sender));
 }
 async function queryPalette(query, sender) {
   const db = await loadDatabase();
-  const types = paletteTypesForUrl(await palettePageUrl(sender));
-  return paletteAssets(db, query ?? '', 8, { types }).map(paletteSummary);
+  if (!inPlaceAllowsOrigin(db.settings.inPlace, senderOrigin(sender))) return [];
+  return paletteAssets(db, query ?? '', 8, { types: paletteTypesForUrl(senderPageUrl(sender)) }).map(paletteSummary);
 }
-async function paletteInsert(id) {
+async function paletteInsert(id, sender) {
   const database = await loadDatabase();
+  if (!inPlaceAllowsOrigin(database.settings.inPlace, senderOrigin(sender))) throw new Error('当前站点未启用就地取用。');
   const asset = database.assets.find((item) => item.id === id && item.privacy === 'normal');
   if (!asset) throw new Error('找不到该条目。');
   if (!isReadOnlyDatabase(database)) await saveDatabase(recordAssetUse(database, id));
-  return { content: asset.content };
+  return { content: formatSkillInsert(asset.content, asset.type) };
 }
 async function setStatus(database, state, message = '') { const next = updateAiSettings(database, { status: { state, message } }); await saveDatabase(next); return next; }
 
@@ -301,6 +333,7 @@ async function collectFromActiveTab(message = {}) {
   const saved = saveGithubSkillAsset(database, packageRecord);
   if (saved.duplicate) { await deletePackage(packageRecord.id); return { duplicate: true, asset: saved.asset }; }
   await saveDatabase(saved.database);
+  if (saved.queued) await scheduleAi();
   return { duplicate: false, asset: saved.asset };
 }
 
@@ -314,6 +347,7 @@ async function updateGitHubSkill(assetId) {
   const saved = saveGithubSkillAsset(database, result.packageRecord, { updateAssetId: assetId });
   await saveDatabase(saved.database);
   await deletePackage(asset.skillPackage.packageId);
+  if (saved.queued) await scheduleAi();
   return { changed: true, asset: saved.asset };
 }
 
@@ -343,9 +377,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'queue-existing') return queueExisting();
     if (message.type === 'collect-github-skill') return collectFromActiveTab(message);
     if (message.type === 'update-github-skill') return updateGitHubSkill(message.assetId);
-    if (message.type === 'palette-settings') { const db = await loadDatabase(); return { enabled: db.settings.inPlace.enabled, triggerEnabled: db.settings.inPlace.triggerEnabled }; }
+    if (message.type === 'palette-settings') {
+      const db = await loadDatabase();
+      return { enabled: inPlaceAllowsOrigin(db.settings.inPlace, senderOrigin(sender)), triggerEnabled: db.settings.inPlace.triggerEnabled !== false };
+    }
     if (message.type === 'palette-query') return queryPalette(message.query ?? '', sender);
-    if (message.type === 'palette-insert') return paletteInsert(message.id);
+    if (message.type === 'palette-insert') return paletteInsert(message.id, sender);
     if (message.type === 'sync-sites') return syncContentScripts();
     if (message.type === 'read-notice') { const stored = await sessionStorage().get(NOTICE_KEY); const notice = stored[NOTICE_KEY]; await sessionStorage().remove(NOTICE_KEY); return { message: notice?.message ?? null }; }
     throw new Error('未知的 FutureContext 后台请求。');
