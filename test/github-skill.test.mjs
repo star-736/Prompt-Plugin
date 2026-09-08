@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { collectGitHubSkill, githubSkillUrlError, inspectGitHubSkillUrl, skillContextFromPage, validateGitHubSkillContext } from '../github-skill.js';
+import { checkGitHubSkillUpdate, collectGitHubSkill, filterSkillPackageBlobs, githubSkillUrlError, inspectGitHubSkillUrl, isCommitSha, isSkillMarkdownPath, skillCollectionPrefix, skillContextFromPage, validateGitHubSkillContext } from '../github-skill.js';
 import { FILE_LIMIT_BYTES, PACKAGE_LIMIT_BYTES, assertPackageLimits } from '../package-store.js';
 
 function response(payload, status = 200) { return { ok: status >= 200 && status < 300, status, json: async () => payload }; }
@@ -85,4 +85,156 @@ test('collection resolves branch ref via API when octolytics meta is empty', asy
 test('a package is rejected as a whole when one file or total size exceeds its limit', () => {
   assert.throws(() => assertPackageLimits([{ path: 'too-big.bin', size: FILE_LIMIT_BYTES + 1 }]), (error) => error.code === 'PACKAGE_TOO_LARGE');
   assert.throws(() => assertPackageLimits([{ path: 'a', size: PACKAGE_LIMIT_BYTES }, { path: 'b', size: 1 }]), (error) => error.code === 'PACKAGE_TOO_LARGE');
+});
+
+function blob(path) { return { type: 'blob', path, sha: path, size: 1 }; }
+
+const mixedSkillTree = [
+  blob('SKILL.md'),
+  blob('LICENSE'),
+  blob('scripts/run.py'),
+  blob('references/api.md'),
+  blob('assets/x.png'),
+  blob('src/app.js'),
+  blob('tests/a.js'),
+  blob('node_modules/x'),
+  blob('skills/foo/SKILL.md'),
+  blob('skills/foo/scripts/nested/run.py'),
+  blob('skills/foo/README.md'),
+  blob('skills/other/SKILL.md'),
+  blob('templates/prompt.md'),
+  { type: 'tree', path: 'scripts' },
+  { type: 'tree', path: 'src' }
+];
+
+test('nested SKILL.md collects only that skill folder, including nested scripts', () => {
+  const paths = filterSkillPackageBlobs(mixedSkillTree, 'skills/foo/SKILL.md').map((entry) => entry.path);
+  assert.deepEqual(paths, [
+    'skills/foo/SKILL.md',
+    'skills/foo/scripts/nested/run.py',
+    'skills/foo/README.md'
+  ]);
+});
+
+test('root SKILL.md collects root files plus scripts/references/assets only', () => {
+  assert.equal(skillCollectionPrefix('SKILL.md'), '');
+  const paths = filterSkillPackageBlobs(mixedSkillTree, 'SKILL.md').map((entry) => entry.path);
+  assert.deepEqual(paths, [
+    'SKILL.md',
+    'LICENSE',
+    'scripts/run.py',
+    'references/api.md',
+    'assets/x.png'
+  ]);
+  assert.ok(!paths.includes('src/app.js'));
+  assert.ok(!paths.includes('tests/a.js'));
+  assert.ok(!paths.includes('node_modules/x'));
+  assert.ok(!paths.includes('skills/other/SKILL.md'));
+  assert.ok(!paths.includes('templates/prompt.md'));
+});
+
+test('empty skill collection prefix does not match the whole tree', () => {
+  assert.equal(skillCollectionPrefix('SKILL.md'), '');
+  const paths = filterSkillPackageBlobs(mixedSkillTree, 'SKILL.md').map((entry) => entry.path);
+  assert.equal(paths.length, 5);
+  assert.ok(paths.every((path) => !path.includes('/') || /^(scripts|references|assets)\//.test(path)));
+});
+
+test('root GitHub Skill collection fetches only the allowlisted companion files', async () => {
+  const fetchMock = async (url) => {
+    if (url.endsWith('/repos/acme/demo')) return response({ default_branch: 'main' });
+    if (url.includes('/git/trees/def456')) return response({ truncated: false, tree: mixedSkillTree.map((entry) => (
+      entry.type === 'blob' ? { ...entry, sha: entry.path.replace(/[^\w]+/g, '_'), size: 8 } : entry
+    )) });
+    const blobShas = {
+      SKILL_md: encodedSkill,
+      LICENSE: Buffer.from('MIT').toString('base64'),
+      scripts_run_py: Buffer.from('print(1)').toString('base64'),
+      references_api_md: Buffer.from('# api').toString('base64'),
+      assets_x_png: Buffer.from('png').toString('base64')
+    };
+    for (const [sha, content] of Object.entries(blobShas)) {
+      if (url.endsWith(`/git/blobs/${sha}`)) return response({ encoding: 'base64', content });
+    }
+    throw new Error(`Unexpected URL ${url}`);
+  };
+  const result = await collectGitHubSkill({
+    repository: 'acme/demo',
+    commit: 'def456',
+    path: 'SKILL.md',
+    url: 'https://github.com/acme/demo/blob/main/SKILL.md'
+  }, fetchMock);
+  assert.deepEqual(result.files.map((file) => file.path), [
+    'SKILL.md',
+    'LICENSE',
+    'scripts/run.py',
+    'references/api.md',
+    'assets/x.png'
+  ]);
+  assert.equal(result.source.directory, '');
+});
+
+test('inspectGitHubSkillUrl covers invalid, reserved, refs, and directory pages', () => {
+  assert.equal(inspectGitHubSkillUrl('not a url').kind, 'invalid');
+  assert.equal(inspectGitHubSkillUrl('https://gitlab.com/acme/demo/blob/main/SKILL.md').kind, 'not-github');
+  assert.equal(inspectGitHubSkillUrl('https://github.com/acme').kind, 'github-other');
+  assert.equal(inspectGitHubSkillUrl('https://github.com/acme/demo/issues/1').kind, 'github-other');
+  assert.equal(inspectGitHubSkillUrl('https://github.com/acme/demo').kind, 'github-directory');
+  const refs = inspectGitHubSkillUrl('https://github.com/acme/demo/blob/refs/heads/main/skills/demo/SKILL.md');
+  assert.equal(refs.kind, 'skill-file');
+  assert.equal(refs.ref, 'main');
+  assert.equal(refs.path, 'skills/demo/SKILL.md');
+  assert.equal(isSkillMarkdownPath('SKILL.md'), true);
+  assert.equal(isCommitSha('a'.repeat(40)), true);
+  assert.equal(isCommitSha('short'), false);
+});
+
+test('githubSkillUrlError covers remaining kinds', () => {
+  assert.match(githubSkillUrlError('github-other'), /具体的 SKILL\.md/);
+  assert.match(githubSkillUrlError('skill-file'), /仓库信息/);
+  assert.match(githubSkillUrlError('not-github'), /公开 GitHub/);
+});
+
+test('validateGitHubSkillContext rejects missing repository, path, or ref', () => {
+  assert.throws(() => validateGitHubSkillContext(null), /仓库信息/);
+  assert.throws(() => validateGitHubSkillContext({ repository: 'acme/demo', path: 'README.md', ref: 'main' }), /SKILL\.md/);
+  assert.throws(() => validateGitHubSkillContext({ repository: 'acme/demo', path: 'SKILL.md' }), /仓库信息/);
+  assert.throws(() => skillContextFromPage({ kind: 'github-other' }), /具体的 SKILL\.md/);
+});
+
+test('collection maps network and GitHub HTTP errors', async () => {
+  await assert.rejects(() => collectGitHubSkill({ repository: 'acme/demo', path: 'SKILL.md', commit: 'a'.repeat(40) }, async () => { throw new Error('offline'); }), /私有仓库或网络错误/);
+  await assert.rejects(() => collectGitHubSkill({ repository: 'acme/demo', path: 'SKILL.md', commit: 'a'.repeat(40) }, async () => response({}, 404)), /私有仓库或网络错误/);
+  await assert.rejects(() => collectGitHubSkill({ repository: 'acme/demo', path: 'SKILL.md', commit: 'a'.repeat(40) }, async () => response({}, 500)), /500/);
+});
+
+test('truncated trees and missing SKILL.md are rejected', async () => {
+  const fetchMock = async (url) => {
+    if (url.endsWith('/repos/acme/demo')) return response({ default_branch: 'main' });
+    if (url.includes('/git/trees/')) return response({ truncated: true, tree: [] });
+    throw new Error(`Unexpected URL ${url}`);
+  };
+  await assert.rejects(() => collectGitHubSkill({ repository: 'acme/demo', path: 'SKILL.md', commit: 'a'.repeat(40) }, fetchMock), /过大/);
+});
+
+test('checkGitHubSkillUpdate reports unchanged and changed default-branch commits', async () => {
+  const skillBlob = { type: 'blob', path: 'skills/demo/SKILL.md', sha: 'skill', size: 56 };
+  const unchanged = async (url) => {
+    if (url.endsWith('/repos/acme/demo')) return response({ default_branch: 'main' });
+    if (url.includes('/commits/main')) return response({ sha: 'abc123ffffffffffffffffffffffffffffffff' });
+    throw new Error(`Unexpected URL ${url}`);
+  };
+  const same = await checkGitHubSkillUpdate({ repository: 'acme/demo', directory: 'skills/demo', commit: 'abc123ffffffffffffffffffffffffffffffff' }, unchanged);
+  assert.equal(same.changed, false);
+  const changedFetch = async (url) => {
+    if (url.endsWith('/repos/acme/demo')) return response({ default_branch: 'main' });
+    if (url.includes('/commits/main')) return response({ sha: 'def456ffffffffffffffffffffffffffffffff' });
+    if (url.includes('/git/trees/')) return response({ truncated: false, tree: [skillBlob] });
+    if (url.endsWith('/git/blobs/skill')) return response({ encoding: 'base64', content: encodedSkill });
+    throw new Error(`Unexpected URL ${url}`);
+  };
+  const changed = await checkGitHubSkillUpdate({ repository: 'acme/demo', directory: 'skills/demo', commit: 'old', url: 'https://github.com/acme/demo' }, changedFetch);
+  assert.equal(changed.changed, true);
+  assert.match(changed.packageRecord.skillContent, /Test skill/);
+  await assert.rejects(() => checkGitHubSkillUpdate({}, async () => response({})), /来源信息/);
 });

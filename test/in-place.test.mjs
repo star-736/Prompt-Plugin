@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { normalizeSiteOrigin, sitePattern, siteHost, originOfUrl, shouldTrigger, slashCompletesTrigger, inlineAnchorQuery, INLINE_DISMISS_MS, SHORTCUT_LABEL, SITE_PRESETS, isPromptableSite, relatedMatchPatterns, originCoveredBySites, inPlaceAllowsOrigin, livePaletteUpdate, paletteTypesForUrl } from '../in-place.js';
+import { normalizeSiteOrigin, sitePattern, siteHost, originOfUrl, shouldTrigger, slashCompletesTrigger, inlineAnchorQuery, INLINE_DISMISS_MS, SHORTCUT_LABEL, SITE_PRESETS, isPromptableSite, relatedMatchPatterns, originCoveredBySites, inPlaceAllowsOrigin, livePaletteUpdate, paletteTypesForUrl, patternsForSites, presetFor } from '../in-place.js';
 import { createEmptyDatabase, disableSite, enableSite, updateInPlaceSettings } from '../store.js';
 
 test('normalizeSiteOrigin accepts bare host and full https URL', () => {
@@ -131,4 +131,26 @@ test('disabling a stored site or the master switch drops the live palette gate',
   assert.equal(livePaletteUpdate(database.settings.inPlace, 'https://claude.ai').action, 'destroy');
   database = updateInPlaceSettings(enableSite(createEmptyDatabase(), 'https://claude.ai'), { triggerEnabled: false });
   assert.deepEqual(livePaletteUpdate(database.settings.inPlace, 'https://claude.ai'), { action: 'settings', enabled: true, triggerEnabled: false });
+});
+
+test('normalizeSiteOrigin and site helpers reject invalid hosts', () => {
+  assert.throws(() => normalizeSiteOrigin('https://not a host'), /有效/);
+  assert.throws(() => normalizeSiteOrigin('nota-host'), /域名/);
+  assert.equal(siteHost('not-a-url'), 'not-a-url');
+  assert.equal(originOfUrl('::::'), null);
+  assert.equal(isPromptableSite('not-https'), false);
+  assert.equal(presetFor('https://chatgpt.com')?.label, 'ChatGPT');
+  assert.equal(presetFor('https://example.com'), null);
+});
+
+test('relatedMatchPatterns and patternsForSites cover Gemini, ChatGPT, and custom sites', () => {
+  assert.deepEqual(relatedMatchPatterns('https://gemini.google.com'), ['https://gemini.google.com/*', 'https://*.gemini.google.com/*']);
+  assert.ok(relatedMatchPatterns('https://chatgpt.com').includes('https://chat.openai.com/*'));
+  assert.deepEqual(relatedMatchPatterns('https://docs.example.com'), ['https://docs.example.com/*']);
+  assert.deepEqual(relatedMatchPatterns(''), []);
+  const patterns = patternsForSites(['https://chat.deepseek.com', 'https://chat.deepseek.com']);
+  assert.ok(patterns.includes('https://*.deepseek.com/*'));
+  assert.equal(originCoveredBySites('', ['https://chatgpt.com']), false);
+  assert.deepEqual(paletteTypesForUrl('not-a-url'), ['generic', 'skill']);
+  assert.deepEqual(paletteTypesForUrl('http://grok.com/imagine'), ['generic', 'skill']);
 });

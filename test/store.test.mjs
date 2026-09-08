@@ -2,35 +2,58 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { webcrypto } from 'node:crypto';
 import {
-  assetsFor,
+  activeProvider,
+  addStructureProposal,
   applyAiAssetResult,
   applyAiCategoryGroups,
+  assetsFor,
   captureSelection,
+  categoriesFor,
+  categoryUsage,
+  commitGithubSkillPackage,
   createBackup,
   createCategory,
   createEmptyDatabase,
   decryptProviderKey,
   deleteCategory,
+  discardDraft,
   displayTitle,
   encryptProviderKey,
   formatSkillInsert,
   getDraft,
   hasPrivacyLock,
+  ignoreSite,
   isReadOnlyDatabase,
+  loadDatabase,
   mergeBackup,
   moveAigcAsset,
   normalizeDatabase,
   paletteAssets,
+  parseBackup,
   parseSkillMetadata,
+  READ_ONLY_MESSAGE,
   recordAssetUse,
+  removeAsset,
+  removeAssetAndPackage,
+  removeProviderConfig,
+  renameCategory,
+  resolveStructureProposal,
   saveAsset,
-  saveGithubSkillAsset,
+  saveDatabase,
   saveDraft,
+  saveGithubSkillAsset,
+  saveProviderConfig,
+  scopeFor,
   setAssetCategory,
   setAssetPinned,
   setPrivacyPassword,
+  setSortBy,
   SKILL_INSERT_PREFIX,
+  sortByFor,
   updateAiSettings,
+  updateStructureProposal,
+  usageSummary,
+  validateAsset,
   verifyPrivacyPassword
 } from '../store.js';
 
@@ -253,6 +276,75 @@ test('newer database versions are preserved as read-only', () => {
   assert.equal(isReadOnlyDatabase(normalized), true);
 });
 
+function githubPackage(id, commit) {
+  return { id, skillContent: skill, fileCount: 1, totalSize: 80, source: { repository: 'acme/demo', directory: 'skills/review', commit, defaultBranch: 'main', url: 'https://github.com/acme/demo/blob/main/skills/review/SKILL.md' } };
+}
+
+function githubSkillDatabase(packageId = 'old-pkg') {
+  return saveGithubSkillAsset(createEmptyDatabase(), githubPackage(packageId, 'old-commit'), { id: 'skill-1', now: 1 }).database;
+}
+
+function trackPackages() {
+  const calls = [];
+  return {
+    calls,
+    putPackage: async (record) => { calls.push(`put:${record.id}`); },
+    deletePackage: async (id) => { calls.push(`delete:${id}`); },
+    persist: async (database) => { calls.push('save'); return !isReadOnlyDatabase(database); }
+  };
+}
+
+test('saveDatabase refuses a newer read-only database', async () => {
+  const stored = {};
+  const storage = { async set(value) { Object.assign(stored, value); } };
+  assert.equal(await saveDatabase({ ...createEmptyDatabase(), version: 3 }, storage), false);
+  assert.equal(Object.keys(stored).length, 0);
+});
+
+test('read-only GitHub update does not put or delete packages', async () => {
+  const database = { ...githubSkillDatabase(), version: 3 };
+  const tracker = trackPackages();
+  await assert.rejects(() => commitGithubSkillPackage(database, githubPackage('new-pkg', 'new-commit'), { updateAssetId: 'skill-1', ...tracker }), { message: READ_ONLY_MESSAGE });
+  assert.deepEqual(tracker.calls, []);
+  assert.equal(database.assets[0].skillPackage.packageId, 'old-pkg');
+});
+
+test('writable GitHub update deletes the old package only after a successful save', async () => {
+  const tracker = trackPackages();
+  const saved = await commitGithubSkillPackage(githubSkillDatabase(), githubPackage('new-pkg', 'new-commit'), { updateAssetId: 'skill-1', ...tracker });
+  assert.deepEqual(tracker.calls, ['put:new-pkg', 'save', 'delete:old-pkg']);
+  assert.equal(saved.asset.skillPackage.packageId, 'new-pkg');
+  assert.equal(saved.duplicate, false);
+});
+
+test('GitHub update keeps the old package when saveDatabase returns false', async () => {
+  const tracker = trackPackages();
+  tracker.persist = async () => { tracker.calls.push('save'); return false; };
+  await assert.rejects(() => commitGithubSkillPackage(githubSkillDatabase(), githubPackage('new-pkg', 'new-commit'), { updateAssetId: 'skill-1', ...tracker }), { message: READ_ONLY_MESSAGE });
+  assert.deepEqual(tracker.calls, ['put:new-pkg', 'save']);
+});
+
+test('read-only delete does not remove the skill package', async () => {
+  const database = { ...githubSkillDatabase(), version: 3 };
+  const tracker = trackPackages();
+  await assert.rejects(() => removeAssetAndPackage(database, 'skill-1', tracker), { message: READ_ONLY_MESSAGE });
+  assert.deepEqual(tracker.calls, []);
+});
+
+test('writable delete removes the skill package only after a successful save', async () => {
+  const tracker = trackPackages();
+  const next = await removeAssetAndPackage(githubSkillDatabase(), 'skill-1', tracker);
+  assert.deepEqual(tracker.calls, ['save', 'delete:old-pkg']);
+  assert.equal(next.assets.length, 0);
+});
+
+test('delete keeps the skill package when saveDatabase returns false', async () => {
+  const tracker = trackPackages();
+  tracker.persist = async () => { tracker.calls.push('save'); return false; };
+  await assert.rejects(() => removeAssetAndPackage(githubSkillDatabase(), 'skill-1', tracker), { message: READ_ONLY_MESSAGE });
+  assert.deepEqual(tracker.calls, ['save']);
+});
+
 test('legacy databases gain usage fields on normalize', () => {
   const legacy = { version: 2, assets: [{ id: 'a1', type: 'generic', privacy: 'normal', title: 't', content: 'c', updatedAt: 1, createdAt: 1 }], categories: [], settings: {}, ai: {}, lock: {} };
   const normalized = normalizeDatabase(legacy);
@@ -349,4 +441,114 @@ test('mergeBackup preserves useCount and pinned fields', () => {
   assert.equal(merged.database.assets[0].useCount, 4);
   assert.equal(merged.database.assets[0].pinned, true);
   assert.equal(merged.database.assets[0].lastUsedAt, 99);
+});
+
+test('scopeFor, validateAsset, and displayTitle cover remaining branches', () => {
+  assert.equal(scopeFor('generic'), 'generic');
+  assert.equal(scopeFor('aigc', 'private'), 'aigc-private');
+  assert.throws(() => scopeFor('unknown'), /资产类型/);
+  assert.throws(() => scopeFor('generic', 'secret'), /资料库/);
+  assert.throws(() => validateAsset({ type: 'generic', content: '   ' }), /不能为空/);
+  assert.equal(displayTitle({ type: 'aigc', content: '   ' }), '未命名 AIGC Prompt');
+  assert.equal(displayTitle({ type: 'generic', title: '', content: 'x'.repeat(40) }).endsWith('…'), true);
+  assert.throws(() => parseSkillMetadata('# no yaml'), /frontmatter/);
+  assert.throws(() => parseSkillMetadata('---\ndescription: only\n---\n'), /name/);
+});
+
+test('provider config, categories, sort, drafts, and usage helpers work', async () => {
+  let database = await setPrivacyPassword(createEmptyDatabase(), '123456', webcrypto);
+  const saved = await saveProviderConfig(database, { kind: 'openai', label: 'Work', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4.1-mini', apiKey: 'sk-test' }, '123456', webcrypto);
+  database = saved.database;
+  assert.equal(activeProvider(database).id, saved.provider.id);
+  const updated = await saveProviderConfig(database, { id: saved.provider.id, kind: 'openai', label: 'Work 2', baseUrl: 'https://api.openai.com/v1/', model: 'gpt-4.1-mini' }, '123456', webcrypto);
+  assert.equal(updated.provider.label, 'Work 2');
+  database = removeProviderConfig(updated.database, saved.provider.id);
+  assert.equal(activeProvider(database), null);
+  await assert.rejects(() => saveProviderConfig(createEmptyDatabase(), { baseUrl: 'https://api.openai.com/v1', model: 'm', apiKey: 'k' }, '123456', webcrypto), /不正确/);
+
+  database = createCategory(createEmptyDatabase(), 'generic', '写作', { id: 'cat-1' }).database;
+  assert.equal(categoriesFor(database, 'generic')[0].name, '写作');
+  assert.throws(() => createCategory(database, 'generic', '写作'), /已存在/);
+  assert.throws(() => createCategory(database, 'generic', ''), /请输入/);
+  assert.throws(() => createCategory(database, 'generic', 'x'.repeat(41)), /40/);
+  database = renameCategory(database, 'cat-1', '工作沟通');
+  assert.equal(database.categories[0].name, '工作沟通');
+  assert.throws(() => renameCategory(database, 'missing', 'x'), /找不到/);
+  database = saveAsset(database, { type: 'generic', content: 'body', categoryId: 'cat-1' }, { id: 'g1' }).database;
+  assert.equal(categoryUsage(database, 'cat-1'), 1);
+  database = setSortBy(database, 'generic', 'mostUsed');
+  assert.equal(sortByFor(database, 'generic'), 'mostUsed');
+  assert.throws(() => setSortBy(database, 'generic', 'nope'), /排序/);
+  const summary = usageSummary(recordAssetUse(database, 'g1', Date.now()));
+  assert.equal(summary.total, 1);
+  assert.ok('week' in summary);
+  database = ignoreSite(database, 'https://chatgpt.com');
+  assert.ok(database.settings.inPlace.ignoredSites.includes('https://chatgpt.com'));
+  database = saveDraft(database, { type: 'generic' }, { title: 'd', content: 'c' });
+  database = discardDraft(database, { type: 'generic' });
+  assert.equal(getDraft(database, { type: 'generic' }), null);
+  database = removeAsset(database, 'g1');
+  assert.equal(database.assets.length, 0);
+  assert.throws(() => removeAsset(database, 'g1'), /找不到/);
+});
+
+test('structure proposals can be edited, applied, and dismissed', () => {
+  let database = createEmptyDatabase();
+  database = createCategory(database, 'generic', '旧分类', { id: 'old' }).database;
+  database = saveAsset(database, { type: 'generic', content: 'x', categoryId: 'old' }, { id: 'g1' }).database;
+  database = addStructureProposal(database, { scope: 'generic', summary: '合并', groups: [{ from: ['旧分类'], to: '新分类' }] }, 1);
+  const id = database.ai.proposals[0].id;
+  database = updateStructureProposal(database, id, [{ from: ['旧分类'], to: '通讯' }]);
+  assert.equal(database.ai.proposals[0].groups[0].to, '通讯');
+  database = resolveStructureProposal(database, id, 'apply');
+  assert.equal(database.ai.proposals[0].status, 'applied');
+  assert.equal(database.categories[0].name, '通讯');
+  database = addStructureProposal(database, { scope: 'generic', summary: '忽略', groups: [{ from: ['通讯'], to: '其它' }] });
+  database = resolveStructureProposal(database, database.ai.proposals[0].id, 'dismiss');
+  assert.equal(database.ai.proposals[0].status, 'dismissed');
+  assert.throws(() => updateStructureProposal(database, 'missing', []), /找不到/);
+});
+
+test('AI apply, grouping, palette content match, and backup parse cover leftovers', async () => {
+  let database = createEmptyDatabase();
+  database = createCategory(database, 'generic', '工作', { id: 'work' }).database;
+  database = saveAsset(database, { type: 'generic', title: '', content: '写周报' }, { id: 'g1' }).database;
+  database = applyAiAssetResult(database, 'g1', { title: '周报标题', categoryName: '工作' });
+  assert.equal(database.assets[0].title, '周报标题');
+  assert.equal(database.assets[0].categoryId, 'work');
+  assert.equal(applyAiAssetResult(database, 'missing', { title: 'x' }).assets[0].id, 'g1');
+  database = applyAiCategoryGroups(database, 'generic', [{ name: '', assetIds: ['g1'] }, { name: '沟通', assetIds: ['missing'] }]);
+  database = saveAsset(createEmptyDatabase(), { type: 'generic', title: 'alpha', content: 'zzz' }, { id: 'g1' }).database;
+  database = createCategory(database, 'generic', '邮件', { id: 'mail' }).database;
+  database.assets[0].categoryId = 'mail';
+  assert.equal(paletteAssets(database, '邮件', 8)[0].id, 'g1');
+  assert.throws(() => parseBackup({ format: 'nope' }), /有效备份/);
+  const backup = parseBackup(JSON.stringify(createBackup(database, 9)));
+  assert.equal(backup.version, 2);
+  const stored = {};
+  const storage = { async get() { return { 'futurecontext.v1': database }; }, async set(value) { Object.assign(stored, value); } };
+  assert.equal(normalizeDatabase(null).assets.length, 0);
+  assert.ok(await loadDatabase(storage));
+  assert.equal(await saveDatabase(database, storage), true);
+  assert.ok(stored['futurecontext.v1']);
+  assert.throws(() => setAssetPinned(database, 'missing', true), /找不到/);
+  assert.throws(() => setAssetCategory(database, 'g1', 'no-such'), /找不到该分类/);
+  assert.throws(() => moveAigcAsset(database, 'g1', 'private'), /AIGC/);
+  assert.throws(() => captureSelection(database, 'x'.repeat(100001)), /超过/);
+});
+
+test('GitHub collect duplicate deletes the newly put package', async () => {
+  const tracker = trackPackages();
+  const first = await commitGithubSkillPackage(createEmptyDatabase(), githubPackage('pkg-1', 'old-commit'), tracker);
+  const duplicate = await commitGithubSkillPackage(first.database, githubPackage('pkg-2', 'old-commit'), tracker);
+  assert.equal(duplicate.duplicate, true);
+  assert.ok(tracker.calls.includes('delete:pkg-2'));
+});
+
+test('removeAssetAndPackage without a package only persists', async () => {
+  const tracker = trackPackages();
+  let database = saveAsset(createEmptyDatabase(), { type: 'generic', content: 'body' }, { id: 'g1' }).database;
+  const next = await removeAssetAndPackage(database, 'g1', tracker);
+  assert.deepEqual(tracker.calls, ['save']);
+  assert.equal(next.assets.length, 0);
 });

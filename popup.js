@@ -19,7 +19,7 @@ import {
   moveAigcAsset,
   READ_ONLY_MESSAGE,
   recordAssetUse,
-  removeAsset,
+  removeAssetAndPackage,
   resolveStructureProposal,
   renameCategory,
   saveAsset,
@@ -145,7 +145,10 @@ async function commit(next) {
     showToast('当前为只读，修改不会保存。');
     throw new Error(READ_ONLY_MESSAGE);
   }
-  await saveDatabase(next);
+  if (!await saveDatabase(next)) {
+    showToast('当前为只读，修改不会保存。');
+    throw new Error(READ_ONLY_MESSAGE);
+  }
   state.database = next;
 }
 
@@ -604,8 +607,11 @@ async function deleteAsset(id) {
     actionLabel: '永久删除',
     danger: true,
     onConfirm: async () => {
-      if (asset.skillPackage?.packageId) await deletePackage(asset.skillPackage.packageId);
-      await commit(removeAsset(state.database, id));
+      if (state.readOnly) {
+        showToast('当前为只读，修改不会保存。');
+        throw new Error(READ_ONLY_MESSAGE);
+      }
+      state.database = await removeAssetAndPackage(state.database, id, { persist: saveDatabase, deletePackage });
       state.editor = null;
       state.view = 'library';
       render();

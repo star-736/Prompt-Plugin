@@ -4,6 +4,7 @@ const API_ROOT = 'https://api.github.com';
 const COMMIT_SHA = /^[0-9a-f]{40}$/i;
 const SKILL_MARKDOWN = /(^|\/)SKILL\.md$/i;
 const GITHUB_FILE_ROUTES = new Set(['blob', 'tree']);
+const ROOT_SKILL_COMPANIONS = ['scripts/', 'references/', 'assets/'];
 const GITHUB_RESERVED = new Set([
   'issues', 'pulls', 'pull', 'actions', 'projects', 'wiki', 'settings', 'security',
   'pulse', 'graphs', 'network', 'forks', 'releases', 'tags', 'branches', 'commit',
@@ -95,13 +96,27 @@ export function validateGitHubSkillContext(context) {
   return { repository: context.repository, commit: context.commit || '', ref: context.ref || '', path, url: context.url ?? '' };
 }
 
+export function skillCollectionPrefix(skillPath) {
+  const path = String(skillPath ?? '').replace(/^\/+/, '');
+  const slash = path.lastIndexOf('/');
+  return slash === -1 ? '' : path.slice(0, slash + 1);
+}
+
+export function filterSkillPackageBlobs(treeEntries, skillPath) {
+  const path = String(skillPath ?? '').replace(/^\/+/, '');
+  const prefix = skillCollectionPrefix(path);
+  const blobs = (Array.isArray(treeEntries) ? treeEntries : []).filter((entry) => entry?.type === 'blob' && typeof entry.path === 'string');
+  if (prefix) return blobs.filter((entry) => entry.path === path || entry.path.startsWith(prefix));
+  return blobs.filter((entry) => !entry.path.includes('/') || ROOT_SKILL_COMPANIONS.some((dir) => entry.path.startsWith(dir)));
+}
+
 async function fetchAtCommit({ repository, commit, path, url }, fetchImpl, defaultBranch = null) {
   const [owner, repo] = repository.split('/');
   const tree = await json(fetchImpl, `${API_ROOT}/repos/${owner}/${repo}/git/trees/${encodeURIComponent(commit)}?recursive=1`);
   if (tree.truncated) throw new Error('该 GitHub 仓库目录过大，无法安全收集此 Skill。');
   const directory = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
-  const prefix = directory ? `${directory}/` : '';
-  const candidates = tree.tree.filter((entry) => entry.type === 'blob' && (entry.path === path || entry.path.startsWith(prefix)));
+  const prefix = skillCollectionPrefix(path);
+  const candidates = filterSkillPackageBlobs(tree.tree, path);
   if (!candidates.some((entry) => entry.path === path)) throw new Error('当前 Commit 中找不到 SKILL.md。');
   assertPackageLimits(candidates.map((entry) => ({ path: entry.path, size: entry.size })));
   const files = [];

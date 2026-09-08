@@ -5,6 +5,7 @@ import {
   applyAiCategoryGroups,
   captureSelection,
   categoriesFor,
+  commitGithubSkillPackage,
   decryptProviderKey,
   displayTitle,
   formatSkillInsert,
@@ -15,7 +16,6 @@ import {
   recordAssetUse,
   removeProviderConfig,
   saveDatabase,
-  saveGithubSkillAsset,
   saveProviderConfig,
   updateAiSettings,
   verifyPrivacyPassword
@@ -317,6 +317,7 @@ async function resolveCollectTab(message = {}) {
 }
 
 async function collectFromActiveTab(message = {}) {
+  if (isReadOnlyDatabase(await loadDatabase())) throw new Error(READ_ONLY_MESSAGE);
   const tab = await resolveCollectTab(message);
   const url = message.url || tab?.url || '';
   const inspection = inspectGitHubSkillUrl(url);
@@ -328,27 +329,54 @@ async function collectFromActiveTab(message = {}) {
     injected = result?.result ?? {};
   } catch { /* 新 UI 或缺 meta 时改用 URL / API。 */ }
   const packageRecord = await collectGitHubSkill(skillContextFromPage(inspection, injected));
-  await putPackage(packageRecord);
   const database = await loadDatabase();
-  const saved = saveGithubSkillAsset(database, packageRecord);
-  if (saved.duplicate) { await deletePackage(packageRecord.id); return { duplicate: true, asset: saved.asset }; }
-  await saveDatabase(saved.database);
+  const saved = await commitGithubSkillPackage(database, packageRecord, { putPackage, deletePackage });
+  if (saved.duplicate) return { duplicate: true, asset: saved.asset };
   if (saved.queued) await scheduleAi();
   return { duplicate: false, asset: saved.asset };
 }
 
 async function updateGitHubSkill(assetId) {
   const database = await loadDatabase();
+  if (isReadOnlyDatabase(database)) throw new Error(READ_ONLY_MESSAGE);
   const asset = database.assets.find((item) => item.id === assetId);
   if (!asset?.skillPackage?.source) throw new Error('这不是可更新的 GitHub Skill。');
   const result = await checkGitHubSkillUpdate(asset.skillPackage.source);
   if (!result.changed) return { changed: false };
-  await putPackage(result.packageRecord);
-  const saved = saveGithubSkillAsset(database, result.packageRecord, { updateAssetId: assetId });
-  await saveDatabase(saved.database);
-  await deletePackage(asset.skillPackage.packageId);
+  const saved = await commitGithubSkillPackage(database, result.packageRecord, { updateAssetId: assetId, putPackage, deletePackage });
   if (saved.queued) await scheduleAi();
   return { changed: true, asset: saved.asset };
+}
+
+export async function handleRuntimeMessage(message, sender = {}) {
+  if (message.type === 'schedule-ai') { await scheduleAi(); return { ok: true }; }
+  if (message.type === 'process-ai-now') { await processAiQueue(); return { ok: true }; }
+  if (message.type === 'unlock-ai') return unlockAi(message.password);
+  if (message.type === 'ai-session-status') { const database = await loadDatabase(); const provider = activeProvider(database); return { unlocked: Boolean(provider && await sessionForProvider(provider.id)), providerId: provider?.id ?? null }; }
+  if (message.type === 'save-provider') {
+    const database = await loadDatabase();
+    const result = await saveProviderConfig(database, message.provider, message.password);
+    const saved = result.database.ai.providers.find((provider) => provider.id === result.provider.id);
+    const apiKey = await decryptProviderKey(message.password, saved.secret);
+    await saveDatabase(result.database);
+    await sessionStorage().set({ [SESSION_KEY]: { providerId: saved.id, apiKey, unlockedAt: Date.now() } });
+    return result.provider;
+  }
+  if (message.type === 'delete-provider') { const database = await loadDatabase(); await saveDatabase(removeProviderConfig(database, message.id)); await sessionStorage().remove(SESSION_KEY); return { ok: true }; }
+  if (message.type === 'clear-ai-session') { await sessionStorage().remove(SESSION_KEY); return { ok: true }; }
+  if (message.type === 'test-provider') return testProvider(message.id);
+  if (message.type === 'queue-existing') return queueExisting();
+  if (message.type === 'collect-github-skill') return collectFromActiveTab(message);
+  if (message.type === 'update-github-skill') return updateGitHubSkill(message.assetId);
+  if (message.type === 'palette-settings') {
+    const db = await loadDatabase();
+    return { enabled: inPlaceAllowsOrigin(db.settings.inPlace, senderOrigin(sender)), triggerEnabled: db.settings.inPlace.triggerEnabled !== false };
+  }
+  if (message.type === 'palette-query') return queryPalette(message.query ?? '', sender);
+  if (message.type === 'palette-insert') return paletteInsert(message.id, sender);
+  if (message.type === 'sync-sites') return syncContentScripts();
+  if (message.type === 'read-notice') { const stored = await sessionStorage().get(NOTICE_KEY); const notice = stored[NOTICE_KEY]; await sessionStorage().remove(NOTICE_KEY); return { message: notice?.message ?? null }; }
+  throw new Error('未知的 FutureContext 后台请求。');
 }
 
 chrome.alarms.onAlarm.addListener((alarm) => { if (alarm.name === AI_ALARM) void processAiQueue(); });
@@ -357,36 +385,6 @@ chrome.runtime.onStartup.addListener(() => { void sessionStorage().remove(SESSIO
 chrome.contextMenus.onClicked.addListener((info, tab) => { if (info.menuItemId === CAPTURE_MENU_ID) void captureFromMenu(info, tab); });
 chrome.commands.onCommand.addListener((command) => { if (command === 'open-palette') void openPaletteInActiveTab(); });
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  const run = async () => {
-    if (message.type === 'schedule-ai') { await scheduleAi(); return { ok: true }; }
-    if (message.type === 'process-ai-now') { await processAiQueue(); return { ok: true }; }
-    if (message.type === 'unlock-ai') return unlockAi(message.password);
-    if (message.type === 'ai-session-status') { const database = await loadDatabase(); const provider = activeProvider(database); return { unlocked: Boolean(provider && await sessionForProvider(provider.id)), providerId: provider?.id ?? null }; }
-    if (message.type === 'save-provider') {
-      const database = await loadDatabase();
-      const result = await saveProviderConfig(database, message.provider, message.password);
-      const saved = result.database.ai.providers.find((provider) => provider.id === result.provider.id);
-      const apiKey = await decryptProviderKey(message.password, saved.secret);
-      await saveDatabase(result.database);
-      await sessionStorage().set({ [SESSION_KEY]: { providerId: saved.id, apiKey, unlockedAt: Date.now() } });
-      return result.provider;
-    }
-    if (message.type === 'delete-provider') { const database = await loadDatabase(); await saveDatabase(removeProviderConfig(database, message.id)); await sessionStorage().remove(SESSION_KEY); return { ok: true }; }
-    if (message.type === 'clear-ai-session') { await sessionStorage().remove(SESSION_KEY); return { ok: true }; }
-    if (message.type === 'test-provider') return testProvider(message.id);
-    if (message.type === 'queue-existing') return queueExisting();
-    if (message.type === 'collect-github-skill') return collectFromActiveTab(message);
-    if (message.type === 'update-github-skill') return updateGitHubSkill(message.assetId);
-    if (message.type === 'palette-settings') {
-      const db = await loadDatabase();
-      return { enabled: inPlaceAllowsOrigin(db.settings.inPlace, senderOrigin(sender)), triggerEnabled: db.settings.inPlace.triggerEnabled !== false };
-    }
-    if (message.type === 'palette-query') return queryPalette(message.query ?? '', sender);
-    if (message.type === 'palette-insert') return paletteInsert(message.id, sender);
-    if (message.type === 'sync-sites') return syncContentScripts();
-    if (message.type === 'read-notice') { const stored = await sessionStorage().get(NOTICE_KEY); const notice = stored[NOTICE_KEY]; await sessionStorage().remove(NOTICE_KEY); return { message: notice?.message ?? null }; }
-    throw new Error('未知的 FutureContext 后台请求。');
-  };
-  run().then((result) => sendResponse({ ok: true, result }), (error) => sendResponse({ ok: false, error: error.message || '操作失败。' }));
+  handleRuntimeMessage(message, sender).then((result) => sendResponse({ ok: true, result }), (error) => sendResponse({ ok: false, error: error.message || '操作失败。' }));
   return true;
 });

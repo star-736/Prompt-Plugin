@@ -328,3 +328,27 @@ export async function saveDatabase(database, storage = chrome.storage.local) {
   if (isReadOnlyDatabase(database)) return false;
   await storage.set({ [APP_STORAGE_KEY]: normalizeDatabase(database) }); return true;
 }
+
+function assertWritableDatabase(database) {
+  if (isReadOnlyDatabase(database)) throw new Error(READ_ONLY_MESSAGE);
+}
+
+export async function commitGithubSkillPackage(database, packageRecord, { updateAssetId = null, putPackage, deletePackage, persist = saveDatabase } = {}) {
+  assertWritableDatabase(database);
+  const oldPackageId = updateAssetId ? database.assets.find((item) => item.id === updateAssetId)?.skillPackage?.packageId ?? null : null;
+  await putPackage(packageRecord);
+  const saved = saveGithubSkillAsset(database, packageRecord, { updateAssetId });
+  if (saved.duplicate) { await deletePackage(packageRecord.id); return saved; }
+  if (!await persist(saved.database)) throw new Error(READ_ONLY_MESSAGE);
+  if (oldPackageId && oldPackageId !== packageRecord.id) await deletePackage(oldPackageId);
+  return saved;
+}
+
+export async function removeAssetAndPackage(database, id, { persist = saveDatabase, deletePackage } = {}) {
+  assertWritableDatabase(database);
+  const packageId = database.assets.find((item) => item.id === id)?.skillPackage?.packageId ?? null;
+  const next = removeAsset(database, id);
+  if (!await persist(next)) throw new Error(READ_ONLY_MESSAGE);
+  if (packageId) await deletePackage(packageId);
+  return next;
+}
