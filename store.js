@@ -3,6 +3,10 @@ export const BACKUP_FORMAT = 'futurecontext.backup';
 export const ASSET_TYPES = Object.freeze(['generic', 'skill', 'aigc']);
 export const CATEGORY_SCOPES = Object.freeze(['generic', 'skill', 'aigc-normal']);
 export const DEFAULT_AI_THRESHOLDS = Object.freeze({ uncategorized: 7, restructureChanges: 7, restructureDays: 14 });
+export const CURRENT_DATABASE_VERSION = 2;
+export const SORT_OPTIONS = Object.freeze({ updated: '最近编辑', lastUsed: '最近取用', mostUsed: '最常取用' });
+export const USAGE_LOG_DAYS = 90;
+export const CAPTURE_LIMIT = 100000;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -39,16 +43,35 @@ export function scopeFor(type, privacy = 'normal') {
   return privacy === 'private' ? 'aigc-private' : type === 'aigc' ? 'aigc-normal' : type;
 }
 
-export function createEmptyDatabase() {
-  return { version: 2, lock: { passwordDigest: null }, settings: { lastNormalTab: 'generic' }, ai: normalizeAi(), assets: [], categories: [], drafts: {} };
+function normalizeInPlace(inPlace) {
+  const sites = Array.isArray(inPlace?.sites) ? inPlace.sites.filter((site) => typeof site === 'string') : [];
+  const ignoredSites = Array.isArray(inPlace?.ignoredSites) ? inPlace.ignoredSites.filter((site) => typeof site === 'string') : [];
+  return { enabled: inPlace?.enabled !== false, triggerEnabled: inPlace?.triggerEnabled !== false, sites, ignoredSites };
 }
+function normalizeSettings(settings) {
+  const sortBy = settings?.sortBy && typeof settings.sortBy === 'object' ? settings.sortBy : {};
+  return { lastNormalTab: 'generic', ...(settings ?? {}), sortBy: Object.fromEntries(Object.entries(sortBy).filter(([, value]) => value in SORT_OPTIONS)), inPlace: normalizeInPlace(settings?.inPlace) };
+}
+function normalizeUsage(usage) { return { log: Array.isArray(usage?.log) ? usage.log.filter((time) => Number.isFinite(time)) : [] }; }
+function normalizeAsset(asset) {
+  const useCount = Number(asset.useCount); const lastUsedAt = Number(asset.lastUsedAt);
+  return { ...asset, useCount: Number.isFinite(useCount) && useCount > 0 ? Math.floor(useCount) : 0, lastUsedAt: Number.isFinite(lastUsedAt) && lastUsedAt > 0 ? lastUsedAt : null, pinned: asset.privacy === 'normal' && asset.pinned === true };
+}
+
+export function createEmptyDatabase() {
+  return { version: CURRENT_DATABASE_VERSION, lock: { passwordDigest: null }, settings: normalizeSettings(), ai: normalizeAi(), usage: normalizeUsage(), assets: [], categories: [], drafts: {} };
+}
+
+// 比当前代码更新的版本号不会被当成空库：数据原样保留、只读，等待用户升级扩展（ADR 0006）。
+export function isReadOnlyDatabase(database) { return Number(database?.version) > CURRENT_DATABASE_VERSION; }
 
 export function normalizeDatabase(value) {
   const empty = createEmptyDatabase();
-  if (!value || typeof value !== 'object' || ![1, 2].includes(value.version)) return empty;
+  const newer = value && typeof value === 'object' && isReadOnlyDatabase(value);
+  if (!value || typeof value !== 'object' || (![1, 2].includes(value.version) && !newer)) return empty;
   return {
-    ...empty, ...value, version: 2, lock: { ...empty.lock, ...(value.lock ?? {}) }, settings: { ...empty.settings, ...(value.settings ?? {}) }, ai: normalizeAi(value.ai),
-    assets: Array.isArray(value.assets) ? value.assets : [], categories: Array.isArray(value.categories) ? value.categories : [], drafts: value.drafts && typeof value.drafts === 'object' ? value.drafts : {}
+    ...empty, ...value, version: newer ? value.version : CURRENT_DATABASE_VERSION, lock: { ...empty.lock, ...(value.lock ?? {}) }, settings: normalizeSettings(value.settings), ai: normalizeAi(value.ai), usage: normalizeUsage(value.usage),
+    assets: Array.isArray(value.assets) ? value.assets.map(normalizeAsset) : [], categories: Array.isArray(value.categories) ? value.categories : [], drafts: value.drafts && typeof value.drafts === 'object' ? value.drafts : {}
   };
 }
 
@@ -143,7 +166,7 @@ export function saveAsset(database, input, { now = Date.now(), id = newId() } = 
   if (input.id && existingIndex < 0) throw new Error('找不到要更新的条目。');
   const existing = existingIndex >= 0 ? next.assets[existingIndex] : null;
   const legacyAigc = existing?.type === 'aigc' ? { title: existing.title ?? '', categoryId: existing.categoryId ?? null } : null;
-  const asset = { ...(existing ?? { id, createdAt: now }), ...validated, ...(legacyAigc ?? {}), titleSource: titleSource(existing, validated), categorySource: categorySource(existing, validated), updatedAt: now };
+  const asset = { ...(existing ?? { id, createdAt: now, useCount: 0, lastUsedAt: null, pinned: false }), ...validated, ...(legacyAigc ?? {}), titleSource: titleSource(existing, validated), categorySource: categorySource(existing, validated), updatedAt: now };
   if (existingIndex >= 0) next.assets[existingIndex] = asset; else next.assets.push(asset);
   enqueueIfEligible(next, existing, asset, now); delete next.drafts[draftKey({ type: asset.type, privacy: asset.privacy, id: input.id || null })];
   return { database: next, asset, queued: next.ai.queue.some((entry) => entry.assetId === asset.id) };
@@ -188,8 +211,67 @@ export function updateStructureProposal(database, id, groups) { const next = nor
 export function updateAiSettings(database, patch) { const next = normalizeDatabase(clone(database)); next.ai = normalizeAi({ ...next.ai, ...patch, thresholds: { ...next.ai.thresholds, ...(patch.thresholds ?? {}) } }); return next; }
 
 export function removeAsset(database, id) { const next = normalizeDatabase(clone(database)); const asset = next.assets.find((item) => item.id === id); if (!asset) throw new Error('找不到要删除的条目。'); next.assets = next.assets.filter((item) => item.id !== id); next.ai.queue = next.ai.queue.filter((entry) => entry.assetId !== id); delete next.drafts[draftKey({ type: asset.type, privacy: asset.privacy, id })]; return next; }
-export function moveAigcAsset(database, id, privacy, now = Date.now()) { if (!['normal', 'private'].includes(privacy)) throw new Error('不支持的目标资料库。'); const next = normalizeDatabase(clone(database)); const index = next.assets.findIndex((asset) => asset.id === id); if (index < 0 || next.assets[index].type !== 'aigc') throw new Error('只有 AIGC Prompt 可以在资料库间移动。'); next.assets[index] = { ...next.assets[index], privacy, categoryId: null, updatedAt: now }; return next; }
-export function assetsFor(database, { type, privacy = 'normal', query = '', categoryId = null }) { const needle = String(query).trim().toLocaleLowerCase(); return database.assets.filter((asset) => asset.type === type && asset.privacy === privacy).filter((asset) => type === 'aigc' || !categoryId || asset.categoryId === categoryId).filter((asset) => !needle || `${displayTitle(asset)}\n${asset.content}`.toLocaleLowerCase().includes(needle)).sort((a, b) => b.updatedAt - a.updatedAt); }
+export function moveAigcAsset(database, id, privacy, now = Date.now()) { if (!['normal', 'private'].includes(privacy)) throw new Error('不支持的目标资料库。'); const next = normalizeDatabase(clone(database)); const index = next.assets.findIndex((asset) => asset.id === id); if (index < 0 || next.assets[index].type !== 'aigc') throw new Error('只有 AIGC Prompt 可以在资料库间移动。'); next.assets[index] = { ...next.assets[index], privacy, categoryId: null, pinned: privacy === 'normal' && Boolean(next.assets[index].pinned), updatedAt: now }; return next; }
+
+const sortComparators = {
+  updated: (a, b) => b.updatedAt - a.updatedAt,
+  lastUsed: (a, b) => (b.lastUsedAt ?? 0) - (a.lastUsedAt ?? 0) || b.updatedAt - a.updatedAt,
+  mostUsed: (a, b) => (b.useCount ?? 0) - (a.useCount ?? 0) || (b.lastUsedAt ?? 0) - (a.lastUsedAt ?? 0) || b.updatedAt - a.updatedAt
+};
+function pinnedFirst(compare) { return (a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || compare(a, b); }
+export function assetsFor(database, { type, privacy = 'normal', query = '', categoryId = null, sortBy = 'updated' }) {
+  const needle = String(query).trim().toLocaleLowerCase();
+  const compare = sortComparators[privacy === 'private' ? 'updated' : sortBy] ?? sortComparators.updated;
+  return database.assets.filter((asset) => asset.type === type && asset.privacy === privacy).filter((asset) => type === 'aigc' || !categoryId || asset.categoryId === categoryId).filter((asset) => !needle || `${displayTitle(asset)}\n${asset.content}`.toLocaleLowerCase().includes(needle)).sort(pinnedFirst(compare));
+}
+export function setSortBy(database, tab, sortBy) { if (!(sortBy in SORT_OPTIONS)) throw new Error('不支持的排序方式。'); const next = normalizeDatabase(clone(database)); next.settings.sortBy = { ...next.settings.sortBy, [tab]: sortBy }; return next; }
+export function sortByFor(database, tab) { return database.settings?.sortBy?.[tab] ?? 'updated'; }
+
+export function recordAssetUse(database, id, now = Date.now()) {
+  const next = normalizeDatabase(clone(database)); const index = next.assets.findIndex((asset) => asset.id === id); if (index < 0) return next;
+  next.assets[index] = { ...next.assets[index], useCount: (next.assets[index].useCount ?? 0) + 1, lastUsedAt: now };
+  next.usage.log = [...next.usage.log.filter((time) => now - time <= USAGE_LOG_DAYS * 86400000), now];
+  return next;
+}
+export function setAssetPinned(database, id, pinned) {
+  const next = normalizeDatabase(clone(database)); const index = next.assets.findIndex((asset) => asset.id === id); if (index < 0) throw new Error('找不到该条目。');
+  if (next.assets[index].privacy !== 'normal') throw new Error('私密库不提供置顶。');
+  next.assets[index] = { ...next.assets[index], pinned: Boolean(pinned) }; return next;
+}
+export function usageSummary(database, now = Date.now()) {
+  const log = database.usage?.log ?? []; const within = (days) => log.filter((time) => now - time <= days * 86400000).length;
+  return { week: within(7), month: within(30), total: database.assets.reduce((sum, asset) => sum + (asset.useCount ?? 0), 0), sites: database.settings?.inPlace?.sites?.length ?? 0 };
+}
+
+// 取用面板：跨类型搜索普通库；私密库永不出现。
+export function paletteAssets(database, query = '', limit = 8) {
+  const needle = String(query ?? '').trim().replace(/\s+/g, ' ').toLocaleLowerCase(); const names = categoryNameMap(database);
+  const scored = [];
+  for (const asset of database.assets) {
+    if (asset.privacy !== 'normal') continue;
+    let score = 0;
+    if (needle) {
+      if (displayTitle(asset).toLocaleLowerCase().includes(needle)) score = 2;
+      else if (`${asset.content}\n${asset.skillDescription ?? ''}\n${names.get(asset.categoryId) ?? ''}`.toLocaleLowerCase().includes(needle)) score = 1;
+      else continue;
+    }
+    scored.push({ asset, score });
+  }
+  return scored.sort((a, b) => Number(Boolean(b.asset.pinned)) - Number(Boolean(a.asset.pinned)) || b.score - a.score || (b.asset.useCount ?? 0) - (a.asset.useCount ?? 0) || b.asset.updatedAt - a.asset.updatedAt).slice(0, limit).map((entry) => entry.asset);
+}
+
+// 就地保存：选中文字直接落为无标题、未分类的通用 Prompt。
+export function captureSelection(database, text, { now = Date.now(), id = newId() } = {}) {
+  const content = String(text ?? '').replace(/\r\n/g, '\n').trim();
+  if (!content) throw new Error('选中的文字为空，没有保存。');
+  if (content.length > CAPTURE_LIMIT) throw new Error(`选中的文字超过 ${CAPTURE_LIMIT.toLocaleString('zh-CN')} 字符，没有保存。`);
+  return saveAsset(database, { type: 'generic', title: '', content }, { now, id });
+}
+
+export function updateInPlaceSettings(database, patch) { const next = normalizeDatabase(clone(database)); next.settings.inPlace = normalizeInPlace({ ...next.settings.inPlace, ...patch }); return next; }
+export function enableSite(database, origin) { const next = normalizeDatabase(clone(database)); const inPlace = next.settings.inPlace; if (!inPlace.sites.includes(origin)) inPlace.sites = [...inPlace.sites, origin]; inPlace.ignoredSites = inPlace.ignoredSites.filter((site) => site !== origin); return next; }
+export function disableSite(database, origin) { const next = normalizeDatabase(clone(database)); next.settings.inPlace.sites = next.settings.inPlace.sites.filter((site) => site !== origin); return next; }
+export function ignoreSite(database, origin) { const next = normalizeDatabase(clone(database)); const inPlace = next.settings.inPlace; if (!inPlace.ignoredSites.includes(origin)) inPlace.ignoredSites = [...inPlace.ignoredSites, origin]; return next; }
 export function categoriesFor(database, scope) { ensureScope(scope); return database.categories.filter((category) => category.scope === scope).sort((a, b) => a.name.localeCompare(b.name, 'zh-CN')); }
 export function createCategory(database, scope, name, { now = Date.now(), id = newId(), createdBy = 'human' } = {}) { ensureScope(scope); const cleanName = normalizedName(name); if (!cleanName) throw new Error('请输入分类名称。'); if (cleanName.length > 40) throw new Error('分类名称不能超过 40 个字符。'); const next = normalizeDatabase(clone(database)); if (next.categories.some((category) => categoryKey(category.scope, category.name) === categoryKey(scope, cleanName))) throw new Error('该分类已存在。'); const category = { id, scope, name: cleanName, createdAt: now, createdBy }; next.categories.push(category); return { database: next, category }; }
 export function renameCategory(database, id, name) { const next = normalizeDatabase(clone(database)); const index = next.categories.findIndex((category) => category.id === id); if (index < 0) throw new Error('找不到该分类。'); const cleanName = normalizedName(name); if (!cleanName) throw new Error('请输入分类名称。'); const category = next.categories[index]; if (next.categories.some((item) => item.id !== id && categoryKey(item.scope, item.name) === categoryKey(category.scope, cleanName))) throw new Error('该分类已存在。'); next.categories[index] = { ...category, name: cleanName }; return next; }
@@ -208,7 +290,7 @@ export function mergeBackup(database, backupValue, { now = Date.now(), idFactory
   const backup = parseBackup(backupValue); const next = normalizeDatabase(clone(database)); const categoryIds = new Map(); const known = new Map(next.categories.map((category) => [categoryKey(category.scope, category.name), category]));
   for (const category of backup.categories) { if (!CATEGORY_SCOPES.includes(category.scope) || !normalizedName(category.name)) continue; const key = categoryKey(category.scope, category.name); let target = known.get(key); if (!target) { target = { id: idFactory(), scope: category.scope, name: normalizedName(category.name), createdAt: now, createdBy: category.createdBy ?? 'human' }; next.categories.push(target); known.set(key, target); } categoryIds.set(category.id, target.id); }
   const fingerprints = new Set(next.assets.map((asset) => assetFingerprint(asset, categoryNameMap(next)))); const packageImports = []; let imported = 0; let skipped = 0;
-  for (const source of backup.assets) try { const categoryId = source.type === 'aigc' || source.privacy === 'private' ? source.categoryId ?? null : (categoryIds.get(source.categoryId) ?? null); const asset = validateAsset({ ...source, categoryId }); const candidate = { ...asset, title: source.type === 'aigc' ? (source.title ?? '') : asset.title, categoryId: source.type === 'aigc' ? (source.categoryId ?? null) : asset.categoryId, skillPackage: source.skillPackage ?? null }; const fingerprint = assetFingerprint(candidate, categoryNameMap(next)); if (fingerprints.has(fingerprint)) { skipped += 1; continue; } if (candidate.skillPackage?.packageId) { const targetPackageId = idFactory(); packageImports.push({ sourcePackageId: candidate.skillPackage.packageId, targetPackageId }); candidate.skillPackage = { ...candidate.skillPackage, packageId: targetPackageId }; } next.assets.push({ ...candidate, id: idFactory(), createdAt: source.createdAt ?? now, updatedAt: source.updatedAt ?? now, titleSource: source.titleSource ?? (candidate.title ? 'manual' : 'none'), categorySource: source.categorySource ?? (candidate.categoryId ? 'manual' : 'none') }); fingerprints.add(fingerprint); imported += 1; } catch { skipped += 1; }
+  for (const source of backup.assets) try { const categoryId = source.type === 'aigc' || source.privacy === 'private' ? source.categoryId ?? null : (categoryIds.get(source.categoryId) ?? null); const asset = validateAsset({ ...source, categoryId }); const candidate = { ...asset, title: source.type === 'aigc' ? (source.title ?? '') : asset.title, categoryId: source.type === 'aigc' ? (source.categoryId ?? null) : asset.categoryId, skillPackage: source.skillPackage ?? null }; const fingerprint = assetFingerprint(candidate, categoryNameMap(next)); if (fingerprints.has(fingerprint)) { skipped += 1; continue; } if (candidate.skillPackage?.packageId) { const targetPackageId = idFactory(); packageImports.push({ sourcePackageId: candidate.skillPackage.packageId, targetPackageId }); candidate.skillPackage = { ...candidate.skillPackage, packageId: targetPackageId }; } next.assets.push(normalizeAsset({ ...candidate, id: idFactory(), createdAt: source.createdAt ?? now, updatedAt: source.updatedAt ?? now, titleSource: source.titleSource ?? (candidate.title ? 'manual' : 'none'), categorySource: source.categorySource ?? (candidate.categoryId ? 'manual' : 'none'), useCount: source.useCount, lastUsedAt: source.lastUsedAt, pinned: source.pinned })); fingerprints.add(fingerprint); imported += 1; } catch { skipped += 1; }
   return { database: next, imported, skipped, packages: backup.packages, packageImports };
 }
 export function saveGithubSkillAsset(database, packageInfo, { now = Date.now(), id = newId(), updateAssetId = null } = {}) {
@@ -220,4 +302,8 @@ export function saveGithubSkillAsset(database, packageInfo, { now = Date.now(), 
   if (index >= 0) next.assets[index] = asset; else next.assets.push(asset); return { database: next, asset, duplicate: false };
 }
 export async function loadDatabase(storage = chrome.storage.local) { const result = await storage.get(APP_STORAGE_KEY); return normalizeDatabase(result[APP_STORAGE_KEY]); }
-export async function saveDatabase(database, storage = chrome.storage.local) { await storage.set({ [APP_STORAGE_KEY]: normalizeDatabase(database) }); }
+export const READ_ONLY_MESSAGE = '数据来自更新版本的 FutureContext，请升级扩展。当前为只读，所有修改都不会保存。';
+export async function saveDatabase(database, storage = chrome.storage.local) {
+  if (isReadOnlyDatabase(database)) return false;
+  await storage.set({ [APP_STORAGE_KEY]: normalizeDatabase(database) }); return true;
+}

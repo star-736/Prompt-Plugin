@@ -5,6 +5,7 @@ import {
   assetsFor,
   applyAiAssetResult,
   applyAiCategoryGroups,
+  captureSelection,
   createBackup,
   createCategory,
   createEmptyDatabase,
@@ -14,12 +15,17 @@ import {
   encryptProviderKey,
   getDraft,
   hasPrivacyLock,
+  isReadOnlyDatabase,
   mergeBackup,
   moveAigcAsset,
+  normalizeDatabase,
+  paletteAssets,
   parseSkillMetadata,
+  recordAssetUse,
   saveAsset,
   saveGithubSkillAsset,
   saveDraft,
+  setAssetPinned,
   setPrivacyPassword,
   updateAiSettings,
   verifyPrivacyPassword
@@ -164,4 +170,99 @@ test('backup import merges categories and skips fully identical items', () => {
 
 test('skill metadata reads the YAML name and description', () => {
   assert.deepEqual(parseSkillMetadata(skill), { name: 'Email reviewer', description: 'Review email drafts' });
+});
+
+test('newer database versions are preserved as read-only', () => {
+  const newer = { version: 3, assets: [{ id: 'a1', type: 'generic', privacy: 'normal', title: 't', content: 'c', updatedAt: 1, createdAt: 1 }], categories: [], settings: {}, ai: {}, usage: { log: [] }, lock: {} };
+  const normalized = normalizeDatabase(newer);
+  assert.equal(normalized.version, 3);
+  assert.equal(normalized.assets[0].title, 't');
+  assert.equal(isReadOnlyDatabase(normalized), true);
+});
+
+test('legacy databases gain usage fields on normalize', () => {
+  const legacy = { version: 2, assets: [{ id: 'a1', type: 'generic', privacy: 'normal', title: 't', content: 'c', updatedAt: 1, createdAt: 1 }], categories: [], settings: {}, ai: {}, lock: {} };
+  const normalized = normalizeDatabase(legacy);
+  assert.equal(normalized.assets[0].useCount, 0);
+  assert.equal(normalized.assets[0].lastUsedAt, null);
+  assert.equal(normalized.assets[0].pinned, false);
+});
+
+test('recordAssetUse increments count without changing updatedAt', () => {
+  let database = saveAsset(createEmptyDatabase(), { type: 'generic', title: 't', content: 'body' }, { now: 100, id: 'p1' }).database;
+  const updated = recordAssetUse(database, 'p1', 200);
+  assert.equal(updated.assets[0].useCount, 1);
+  assert.equal(updated.assets[0].lastUsedAt, 200);
+  assert.equal(updated.assets[0].updatedAt, 100);
+  assert.ok(updated.usage.log.includes(200));
+});
+
+test('recordAssetUse trims usage log to 90 days', () => {
+  let database = createEmptyDatabase();
+  database.usage.log = [Date.now() - 91 * 86400000];
+  database = saveAsset(database, { type: 'generic', content: 'x' }, { id: 'p1' }).database;
+  const now = Date.now();
+  const updated = recordAssetUse(database, 'p1', now);
+  assert.equal(updated.usage.log.length, 1);
+  assert.equal(updated.usage.log[0], now);
+});
+
+test('assetsFor respects pinned first and sort modes', () => {
+  let database = createEmptyDatabase();
+  database = saveAsset(database, { type: 'generic', title: 'A', content: 'a' }, { now: 1, id: 'a' }).database;
+  database = saveAsset(database, { type: 'generic', title: 'B', content: 'b' }, { now: 2, id: 'b' }).database;
+  database = saveAsset(database, { type: 'generic', title: 'C', content: 'c' }, { now: 3, id: 'c' }).database;
+  database.assets.find((a) => a.id === 'b').pinned = true;
+  database.assets.find((a) => a.id === 'a').useCount = 5;
+  database.assets.find((a) => a.id === 'a').lastUsedAt = 10;
+  database.assets.find((a) => a.id === 'c').useCount = 2;
+  database.assets.find((a) => a.id === 'c').lastUsedAt = 20;
+  assert.deepEqual(assetsFor(database, { type: 'generic', sortBy: 'mostUsed' }).map((a) => a.id), ['b', 'a', 'c']);
+  assert.deepEqual(assetsFor(database, { type: 'generic', sortBy: 'lastUsed' }).map((a) => a.id), ['b', 'c', 'a']);
+});
+
+test('setAssetPinned rejects private library entries', () => {
+  let database = saveAsset(createEmptyDatabase(), { type: 'aigc', privacy: 'private', content: 'secret' }, { id: 'priv' }).database;
+  assert.throws(() => setAssetPinned(database, 'priv', true), /私密库不提供置顶/);
+});
+
+test('paletteAssets excludes private, prioritizes title match and pinned', () => {
+  let database = createEmptyDatabase();
+  database = saveAsset(database, { type: 'generic', title: 'alpha', content: 'zzz' }, { id: 'g1', now: 1 }).database;
+  database = saveAsset(database, { type: 'generic', title: 'beta', content: 'alpha body' }, { id: 'g2', now: 2 }).database;
+  database = saveAsset(database, { type: 'aigc', privacy: 'private', content: 'alpha secret' }, { id: 'p1', now: 3 }).database;
+  database.assets.find((a) => a.id === 'g2').pinned = true;
+  const results = paletteAssets(database, 'alpha', 8);
+  assert.deepEqual(results.map((a) => a.id), ['g2', 'g1']);
+});
+
+test('paletteAssets limit applies', () => {
+  let database = createEmptyDatabase();
+  for (let i = 0; i < 10; i += 1) database = saveAsset(database, { type: 'generic', title: `t${i}`, content: 'x' }, { id: `g${i}`, now: i }).database;
+  assert.equal(paletteAssets(database, '', 8).length, 8);
+});
+
+test('captureSelection rejects empty text and queues when AI enabled', () => {
+  assert.throws(() => captureSelection(createEmptyDatabase(), '   '), /为空/);
+  let database = updateAiSettings(createEmptyDatabase(), { enabled: true });
+  const saved = captureSelection(database, 'selected text', { now: 5, id: 'cap1' });
+  assert.equal(saved.asset.type, 'generic');
+  assert.equal(saved.asset.title, '');
+  assert.equal(saved.asset.categoryId, null);
+  assert.equal(saved.asset.titleSource, 'none');
+  assert.equal(saved.queued, true);
+});
+
+test('mergeBackup preserves useCount and pinned fields', () => {
+  let source = createEmptyDatabase();
+  source = saveAsset(source, { type: 'generic', title: 'x', content: 'unique-body' }, { id: 's1', now: 1 }).database;
+  source.assets[0].useCount = 4;
+  source.assets[0].pinned = true;
+  source.assets[0].lastUsedAt = 99;
+  const backup = createBackup(source, 2);
+  const merged = mergeBackup(createEmptyDatabase(), backup, { now: 3, idFactory: () => 'm1' });
+  assert.equal(merged.imported, 1);
+  assert.equal(merged.database.assets[0].useCount, 4);
+  assert.equal(merged.database.assets[0].pinned, true);
+  assert.equal(merged.database.assets[0].lastUsedAt, 99);
 });

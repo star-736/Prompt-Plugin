@@ -3,9 +3,15 @@ import {
   addStructureProposal,
   applyAiAssetResult,
   applyAiCategoryGroups,
+  captureSelection,
   categoriesFor,
   decryptProviderKey,
+  displayTitle,
+  isReadOnlyDatabase,
   loadDatabase,
+  paletteAssets,
+  READ_ONLY_MESSAGE,
+  recordAssetUse,
   removeProviderConfig,
   saveDatabase,
   saveGithubSkillAsset,
@@ -16,11 +22,80 @@ import {
 import { buildAssetOrganizationPrompt, buildGroupingPrompt, buildStructurePrompt, chatCompletion, parseAssetResult, parseGroups } from './ai-organizer.js';
 import { checkGitHubSkillUpdate, collectGitHubSkill } from './github-skill.js';
 import { deletePackage, putPackage } from './package-store.js';
+import { PALETTE_SCRIPT_FILE, PALETTE_SCRIPT_ID, sitePattern } from './in-place.js';
 
 const SESSION_KEY = 'futurecontext.ai-session';
 const AI_ALARM = 'futurecontext.ai-queue';
+const CAPTURE_MENU_ID = 'futurecontext-capture-selection';
+export const NOTICE_KEY = 'futurecontext.notice';
+const paletteLabels = { generic: '通用', skill: 'Skill', aigc: 'AIGC' };
+let badgeTimer;
 
 function sessionStorage() { return chrome.storage.session; }
+
+// ---- 就地取用：启用站点的 content script 注册 ----
+async function grantedSites(database) {
+  const sites = database.settings.inPlace.enabled ? database.settings.inPlace.sites : [];
+  const checks = await Promise.all(sites.map((origin) => chrome.permissions.contains({ origins: [sitePattern(origin)] }).catch(() => false)));
+  return sites.filter((_, index) => checks[index]);
+}
+async function syncContentScripts() {
+  const database = await loadDatabase();
+  const matches = (await grantedSites(database)).map(sitePattern);
+  const existing = await chrome.scripting.getRegisteredContentScripts({ ids: [PALETTE_SCRIPT_ID] });
+  if (!matches.length) { if (existing.length) await chrome.scripting.unregisterContentScripts({ ids: [PALETTE_SCRIPT_ID] }); return { sites: 0 }; }
+  const script = { id: PALETTE_SCRIPT_ID, js: [PALETTE_SCRIPT_FILE], matches, runAt: 'document_idle', allFrames: false, persistAcrossSessions: true };
+  if (existing.length) await chrome.scripting.updateContentScripts([script]); else await chrome.scripting.registerContentScripts([script]);
+  return { sites: matches.length };
+}
+async function activeTab() { const [tab] = await chrome.tabs.query({ active: true, currentWindow: true }); return tab ?? null; }
+async function notifyTab(tabId, text) { if (!tabId) return; try { await chrome.tabs.sendMessage(tabId, { type: 'fc-toast', text }); } catch { /* 未启用站点没有页面代码，静默。 */ } }
+async function openPaletteInActiveTab() {
+  const tab = await activeTab(); if (!tab?.id) return;
+  try { await chrome.tabs.sendMessage(tab.id, { type: 'fc-open-palette' }); }
+  catch { await flashBadge('!', '这个网站还没有启用就地取用。在弹窗顶部或设置中启用后再按快捷键。'); }
+}
+
+// ---- 就地保存：右键菜单 ----
+async function flashBadge(text, notice = null) {
+  clearTimeout(badgeTimer);
+  await chrome.action.setBadgeBackgroundColor({ color: text === '!' ? '#a45762' : '#6d90b9' });
+  await chrome.action.setBadgeText({ text });
+  if (notice) await sessionStorage().set({ [NOTICE_KEY]: { message: notice, at: Date.now() } });
+  badgeTimer = setTimeout(() => { void chrome.action.setBadgeText({ text: '' }); }, 3000);
+}
+function readPageSelection() { return String(globalThis.getSelection?.() ?? ''); }
+async function captureFromMenu(info, tab) {
+  let text = info.selectionText ?? '';
+  if (tab?.id) {
+    try { const [injected] = await chrome.scripting.executeScript({ target: { tabId: tab.id, frameIds: [info.frameId ?? 0] }, func: readPageSelection }); if (String(injected?.result ?? '').trim()) text = injected.result; } catch { /* 无法读取精确选区时退回菜单提供的文本。 */ }
+  }
+  try {
+    const database = await loadDatabase();
+    if (isReadOnlyDatabase(database)) throw new Error(READ_ONLY_MESSAGE);
+    const saved = captureSelection(database, text);
+    await saveDatabase(saved.database);
+    if (saved.queued) await scheduleAi();
+    await flashBadge('✓');
+    await notifyTab(tab?.id, '已保存到 FutureContext');
+  } catch (error) { await flashBadge('!', error.message || '就地保存失败。'); }
+}
+function ensureContextMenu() {
+  chrome.contextMenus.removeAll(() => { chrome.contextMenus.create({ id: CAPTURE_MENU_ID, title: '保存到 FutureContext', contexts: ['selection'] }); });
+}
+
+// ---- 取用面板消息 ----
+function paletteSummary(asset) {
+  const preview = (asset.type === 'skill' && asset.skillDescription ? asset.skillDescription : asset.content).replace(/\s+/g, ' ').trim();
+  return { id: asset.id, type: asset.type, typeLabel: paletteLabels[asset.type] ?? asset.type, title: displayTitle(asset), preview: preview.slice(0, 160), pinned: Boolean(asset.pinned) };
+}
+async function paletteInsert(id) {
+  const database = await loadDatabase();
+  const asset = database.assets.find((item) => item.id === id && item.privacy === 'normal');
+  if (!asset) throw new Error('找不到该条目。');
+  if (!isReadOnlyDatabase(database)) await saveDatabase(recordAssetUse(database, id));
+  return { content: asset.content };
+}
 async function setStatus(database, state, message = '') { const next = updateAiSettings(database, { status: { state, message } }); await saveDatabase(next); return next; }
 
 async function sessionForProvider(providerId) {
@@ -149,7 +224,10 @@ async function updateGitHubSkill(assetId) {
 }
 
 chrome.alarms.onAlarm.addListener((alarm) => { if (alarm.name === AI_ALARM) void processAiQueue(); });
-chrome.runtime.onStartup.addListener(() => { void sessionStorage().remove(SESSION_KEY); });
+chrome.runtime.onInstalled.addListener(() => { ensureContextMenu(); void syncContentScripts(); });
+chrome.runtime.onStartup.addListener(() => { void sessionStorage().remove(SESSION_KEY); void syncContentScripts(); });
+chrome.contextMenus.onClicked.addListener((info, tab) => { if (info.menuItemId === CAPTURE_MENU_ID) void captureFromMenu(info, tab); });
+chrome.commands.onCommand.addListener((command) => { if (command === 'open-palette') void openPaletteInActiveTab(); });
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   const run = async () => {
     if (message.type === 'schedule-ai') { await scheduleAi(); return { ok: true }; }
@@ -171,6 +249,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === 'queue-existing') return queueExisting();
     if (message.type === 'collect-github-skill') return collectFromActiveTab();
     if (message.type === 'update-github-skill') return updateGitHubSkill(message.assetId);
+    if (message.type === 'palette-settings') { const db = await loadDatabase(); return { enabled: db.settings.inPlace.enabled, triggerEnabled: db.settings.inPlace.triggerEnabled }; }
+    if (message.type === 'palette-query') { const db = await loadDatabase(); return paletteAssets(db, message.query ?? '').map(paletteSummary); }
+    if (message.type === 'palette-insert') return paletteInsert(message.id);
+    if (message.type === 'sync-sites') return syncContentScripts();
+    if (message.type === 'read-notice') { const stored = await sessionStorage().get(NOTICE_KEY); const notice = stored[NOTICE_KEY]; await sessionStorage().remove(NOTICE_KEY); return { message: notice?.message ?? null }; }
     throw new Error('未知的 FutureContext 后台请求。');
   };
   run().then((result) => sendResponse({ ok: true, result }), (error) => sendResponse({ ok: false, error: error.message || '操作失败。' }));

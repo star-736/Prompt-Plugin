@@ -2,10 +2,10 @@
   "name": "futurecontext-edge-extension",
   "private": true,
   "type": "module",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Local-first AI asset library for Edge and Chrome",
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "check": "node -e \"JSON.parse(require('node:fs').readFileSync('manifest.json', 'utf8'))\" && node --check popup.js && node --check store.js && node --check background.js && node --check ai-organizer.js && node --check github-skill.js && node --check package-store.js && node --check test/store.test.mjs && node --check test/github-skill.test.mjs"
+    "check": "node -e \"JSON.parse(require('node:fs').readFileSync('manifest.json', 'utf8'))\" && node --check popup.js && node --check store.js && node --check background.js && node --check ai-organizer.js && node --check github-skill.js && node --check package-store.js && node --check in-place.js && node --check content-palette.js && node --check test/store.test.mjs && node --check test/github-skill.test.mjs && node --check test/in-place.test.mjs"
   }
 }

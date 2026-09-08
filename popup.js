@@ -6,27 +6,40 @@ import {
   createCategory,
   deleteCategory,
   discardDraft,
+  disableSite,
   displayTitle,
+  enableSite,
   getDraft,
   hasPrivacyLock,
+  ignoreSite,
+  isReadOnlyDatabase,
   loadDatabase,
   mergeBackup,
   moveAigcAsset,
+  READ_ONLY_MESSAGE,
+  recordAssetUse,
   removeAsset,
   resolveStructureProposal,
   renameCategory,
   saveAsset,
   saveDatabase,
   saveDraft,
+  setAssetPinned,
+  setSortBy,
+  sortByFor,
+  SORT_OPTIONS,
   updateAiSettings,
+  updateInPlaceSettings,
   updateStructureProposal,
   removeProviderConfig,
   scopeFor,
   setPrivacyPassword,
+  usageSummary,
   verifyPrivacyPassword
 } from './store.js';
 import { PROVIDER_PRESETS, providerOrigin } from './ai-organizer.js';
 import { deletePackage, exportPackages, getPackage, importPackages, isTextFile } from './package-store.js';
+import { normalizeSiteOrigin, originOfUrl, PALETTE_SCRIPT_FILE, SHORTCUT_LABEL, SITE_PRESETS, siteHost, sitePattern } from './in-place.js';
 
 const app = document.querySelector('#app');
 const toast = document.querySelector('#toast');
@@ -45,7 +58,12 @@ const state = {
   search: '',
   categoryId: null,
   categoryMenuOpen: false,
+  sortMenuOpen: false,
   unlockedPrivate: false,
+  readOnly: false,
+  notice: null,
+  tabId: null,
+  tabOrigin: null,
   editor: null,
   manageScope: null,
   categoryEditId: null,
@@ -78,6 +96,10 @@ function searchIcon() {
 
 function chevronIcon() {
   return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>';
+}
+
+function pinIcon() {
+  return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 17v5"/><path d="M9 3h6l1 7-4 3-4-3z"/></svg>';
 }
 
 function isPrivateView() {
@@ -118,8 +140,57 @@ async function requestOrigins(origins) {
 }
 
 async function commit(next) {
+  if (state.readOnly) {
+    showToast('当前为只读，修改不会保存。');
+    throw new Error(READ_ONLY_MESSAGE);
+  }
   await saveDatabase(next);
   state.database = next;
+}
+
+function renderReadOnlyBanner() {
+  return state.readOnly ? `<div class="notice-banner is-readonly">${escapeHtml(READ_ONLY_MESSAGE)}</div>` : '';
+}
+
+function renderNoticeBanner() {
+  if (!state.notice) return '';
+  return `<div class="notice-banner"><span>${escapeHtml(state.notice)}</span><button class="button button-ghost button-small" type="button" data-action="dismiss-notice">关闭</button></div>`;
+}
+
+function renderSiteHint() {
+  const inPlace = state.database.settings.inPlace;
+  if (!inPlace.enabled || !state.tabOrigin || inPlace.sites.includes(state.tabOrigin) || inPlace.ignoredSites.includes(state.tabOrigin)) return '';
+  const host = siteHost(state.tabOrigin);
+  return `<div class="site-hint"><span>在 ${escapeHtml(host)} 启用就地取用</span><span class="site-hint-actions"><button class="button button-primary button-small" type="button" data-action="enable-current-site">启用</button><button class="button button-ghost button-small" type="button" data-action="ignore-current-site">忽略</button></span></div>`;
+}
+
+function renderSortPicker() {
+  if (state.activeTab === 'aigc' && state.privacy === 'private') return '';
+  const current = sortByFor(state.database, state.activeTab);
+  const label = SORT_OPTIONS[current] ?? SORT_OPTIONS.updated;
+  return `<div class="sort-picker category-picker">
+    <button class="category-trigger" type="button" data-action="toggle-sort-menu">${escapeHtml(label)}${chevronIcon()}</button>
+    <div class="category-menu" ${state.sortMenuOpen ? '' : 'hidden'}>
+      ${Object.entries(SORT_OPTIONS).map(([value, text]) => `<button class="menu-item ${current === value ? 'is-active' : ''}" type="button" data-action="set-sort" data-sort="${value}">${escapeHtml(text)}</button>`).join('')}
+    </div>
+  </div>`;
+}
+
+async function enableSiteOrigin(origin) {
+  await requestOrigins([sitePattern(origin)]);
+  await commit(enableSite(state.database, origin));
+  await sendBackground({ type: 'sync-sites' });
+  if (state.tabId && state.tabOrigin === origin) {
+    try { await chrome.scripting.executeScript({ target: { tabId: state.tabId }, files: [PALETTE_SCRIPT_FILE] }); } catch { /* 当前页可能尚未授权。 */ }
+  }
+  showToast('已启用就地取用');
+}
+
+async function disableSiteOrigin(origin) {
+  await commit(disableSite(state.database, origin));
+  try { await chrome.permissions.remove({ origins: [sitePattern(origin)] }); } catch { /* 权限可能已撤销。 */ }
+  await sendBackground({ type: 'sync-sites' });
+  showToast('已停用就地取用');
 }
 
 function pageHeading(title, backAction = 'library') {
@@ -163,14 +234,15 @@ function previewFor(asset) {
 }
 
 function renderAssetList() {
-  const assets = assetsFor(state.database, { type: state.activeTab, privacy: activePrivacy(), query: state.search, categoryId: state.categoryId });
+  const assets = assetsFor(state.database, { type: state.activeTab, privacy: activePrivacy(), query: state.search, categoryId: state.categoryId, sortBy: sortByFor(state.database, state.activeTab) });
   const githubCollect = state.activeTab === 'skill' ? '<button class="button button-ghost" type="button" data-action="collect-github-skill">从当前 GitHub 页面收集</button>' : '';
+  const pinBtn = (asset) => asset.privacy === 'normal' ? `<button class="button button-ghost button-small pin-button ${asset.pinned ? 'is-pinned' : ''}" type="button" data-action="toggle-pin" data-id="${asset.id}" aria-label="${asset.pinned ? '取消置顶' : '置顶'}">${pinIcon()}</button>` : '';
   if (!assets.length) return `<div class="empty-state"><p>暂无${escapeHtml(emptyName())}</p><div class="empty-actions"><button class="button button-primary" type="button" data-action="new-asset">新建${escapeHtml(emptyName())}</button>${githubCollect}</div></div>`;
   return `<ul class="asset-list">${assets.map((asset) => `<li class="asset-row">
     <button class="asset-open" type="button" data-action="open-asset" data-id="${asset.id}">
       ${asset.type === 'aigc' ? `<span class="asset-aigc-content">${escapeHtml(asset.content)}</span>` : `<span class="asset-title">${escapeHtml(displayTitle(asset))}</span><span class="asset-preview">${escapeHtml(previewFor(asset))}</span>${asset.privacy === 'normal' ? `<span class="asset-meta"><span class="category-badge">${escapeHtml(categoryName(asset.categoryId))}</span></span>` : ''}`}
     </button>
-    <button class="button button-ghost button-small copy-button" type="button" data-action="copy-asset" data-id="${asset.id}">复制</button>
+    <div class="asset-actions">${pinBtn(asset)}<button class="button button-ghost button-small copy-button" type="button" data-action="copy-asset" data-id="${asset.id}">复制</button></div>
   </li>`).join('')}</ul>${githubCollect ? `<div class="library-secondary-action">${githubCollect}</div>` : ''}`;
 }
 
@@ -194,10 +266,11 @@ function renderLibrary() {
   const privateGate = isPrivateView() && !state.unlockedPrivate;
   const tools = privateGate ? '' : `<div class="library-tools">
     <label class="search-box">${searchIcon()}<input id="search" type="search" value="${escapeHtml(state.search)}" placeholder="搜索标题或内容" aria-label="搜索当前内容" /></label>
+    ${isPrivateView() ? '' : renderSortPicker()}
     ${isPrivateView() ? '' : renderCategoryPicker()}
     <button class="button button-primary" type="button" data-action="new-asset">+ 新建</button>
   </div>`;
-  return `${renderTabs()}${renderSubtabs()}${tools}${privateGate ? renderPrivateGate() : renderAssetList()}`;
+  return `${renderReadOnlyBanner()}${renderNoticeBanner()}${renderSiteHint()}${renderTabs()}${renderSubtabs()}${tools}${privateGate ? renderPrivateGate() : renderAssetList()}`;
 }
 
 function editorValues() {
@@ -234,8 +307,8 @@ function renderEditor() {
   const management = existing?.type === 'aigc' ? `<div class="secondary-management">
       <button class="button button-ghost button-small" type="button" data-action="move-asset" data-id="${existing.id}" data-target="${existing.privacy === 'private' ? 'normal' : 'private'}">${existing.privacy === 'private' ? '移出私密库' : '移入私密库'}</button>
       <button class="button button-danger button-small" type="button" data-action="delete-asset" data-id="${existing.id}">永久删除</button>
-    </div>` : existing ? `<div class="secondary-management"><button class="button button-danger button-small" type="button" data-action="delete-asset" data-id="${existing.id}">永久删除</button></div>` : '';
-  return `${pageHeading(heading, 'editor-back')}<form class="editor-form" id="editor-form">
+    </div>` : existing ? `<div class="secondary-management">${existing.privacy === 'normal' ? `<button class="button button-ghost button-small" type="button" data-action="toggle-pin" data-id="${existing.id}">${existing.pinned ? '取消置顶' : '置顶'}</button>` : ''}<button class="button button-danger button-small" type="button" data-action="delete-asset" data-id="${existing.id}">永久删除</button></div>` : '';
+  return `${renderReadOnlyBanner()}${pageHeading(heading, 'editor-back')}<form class="editor-form" id="editor-form">
     ${titleField}
     ${categoryOptions(type, privacy, values.categoryId, state.editor.categoryCreating)}
     <div class="field"><label>${contentLabel}<textarea id="editor-content" class="${isSkill ? 'skill-editor' : ''}" ${isSkill ? '' : 'required'}>${escapeHtml(values.content)}</textarea></label>${contentHelp}</div>
@@ -260,9 +333,13 @@ function renderSettings() {
   const ai = state.database.ai;
   const current = ai.providers.find((provider) => provider.id === ai.activeProviderId);
   const status = ai.status?.state === 'paused' ? ai.status.message : ai.enabled ? '后台整理已开启' : '后台整理未开启';
-  return `${pageHeading('设置', 'library')}<div class="settings-list">
+  const inPlace = state.database.settings.inPlace;
+  const usage = usageSummary(state.database);
+  return `${renderReadOnlyBanner()}${pageHeading('设置', 'library')}<div class="settings-list">
     <div class="setting-row"><div><div class="setting-title">隐私锁</div><div class="setting-description">${lockStatus}。重设不会删除私密内容。</div></div><button class="button button-ghost button-small" type="button" data-action="reset-lock">${hasPrivacyLock(state.database) ? '重设隐私锁' : '设置隐私锁'}</button></div>
     <div class="setting-row setting-row-stack"><div><div class="setting-title">后台 AI 整理</div><div class="setting-description">${escapeHtml(status)}${current ? ` 当前 Provider：${escapeHtml(current.label)}。` : ' 还未配置 Provider。'}</div></div><div class="setting-actions"><label class="switch-label"><input id="ai-enabled" type="checkbox" ${ai.enabled ? 'checked' : ''} />开启</label><button class="button button-ghost button-small" type="button" data-action="manage-providers">Provider</button></div></div>
+    <div class="setting-row setting-row-stack"><div><div class="setting-title">就地取用</div><div class="setting-description">在启用站点的输入框输入 // 或按 ${SHORTCUT_LABEL} 调出取用面板。已启用 ${inPlace.sites.length} 个站点。</div></div><div class="setting-actions"><label class="switch-label"><input id="inplace-enabled" type="checkbox" ${inPlace.enabled ? 'checked' : ''} />开启</label><label class="switch-label"><input id="inplace-trigger" type="checkbox" ${inPlace.triggerEnabled ? 'checked' : ''} />// 触发符</label><button class="button button-ghost button-small" type="button" data-action="manage-sites">站点</button></div></div>
+    <div class="setting-row"><div><div class="setting-title">取用概览</div><div class="setting-description">本周 ${usage.week} 次 · 近 30 天 ${usage.month} 次 · 累计 ${usage.total} 次</div></div><span></span></div>
     <div class="setting-row"><div><div class="setting-title">整理现有内容</div><div class="setting-description">仅处理通用 Prompt 与 Skill；AIGC 永不发送。</div></div><button class="button button-ghost button-small" type="button" data-action="organize-existing">整理</button></div>
     <div class="setting-row"><div><div class="setting-title">分类结构建议</div><div class="setting-description">已有分类的合并、重命名或拆分必须由你确认应用。</div></div><button class="button button-ghost button-small" type="button" data-action="view-proposals">${ai.proposals.filter((proposal) => proposal.status === 'pending').length ? '查看建议' : '暂无建议'}</button></div>
     <div class="setting-row"><div><div class="setting-title">整理阈值</div><div class="setting-description">未分类 ${ai.thresholds.uncategorized} 条；结构检查 ${ai.thresholds.restructureChanges} 条 / ${ai.thresholds.restructureDays} 天。</div></div><button class="button button-ghost button-small" type="button" data-action="edit-ai-thresholds">调整</button></div>
@@ -304,25 +381,34 @@ function renderPackageDetail() {
   const asset = state.database.assets.find((item) => item.id === state.packageAssetId);
   const record = state.packageRecord;
   if (!asset || !record) return `${pageHeading('Skill 文件', 'library')}<div class="empty-state"><p>无法读取本地 Skill 文件。</p></div>`;
-  return `${pageHeading(asset.title, 'library')}<section class="section-card package-source"><h2>GitHub Skill</h2><p>${escapeHtml(asset.skillPackage.source.repository)} · ${escapeHtml(asset.skillPackage.source.directory)} · ${escapeHtml(asset.skillPackage.source.commit.slice(0, 7))}</p><div class="section-actions"><button class="button button-ghost button-small" type="button" data-action="update-github-skill" data-id="${asset.id}">检查 GitHub 更新</button><button class="button button-ghost button-small" type="button" data-action="copy-asset" data-id="${asset.id}">复制 SKILL.md</button></div></section><div class="package-tree">${record.files.map((file) => `<details class="package-file" ${file.path === 'SKILL.md' ? 'open' : ''}><summary>${escapeHtml(file.path)} <span>${Math.ceil(file.size / 1024)} KB</span></summary>${isTextFile(file.path, file.contentType) ? `<p class="script-note">${/\.(py|sh|bash|zsh|ps1|js|mjs|cjs)$/i.test(file.path) ? '仅保存，不执行。' : '只读文本。'}</p><pre>${escapeHtml(decodePackageText(file))}</pre>` : '<p class="script-note">二进制资源：仅保存，不执行。</p>'}</details>`).join('')}</div>`;
+  return `${renderReadOnlyBanner()}${pageHeading(asset.title, 'library')}<section class="section-card package-source"><h2>GitHub Skill</h2><p>${escapeHtml(asset.skillPackage.source.repository)} · ${escapeHtml(asset.skillPackage.source.directory)} · ${escapeHtml(asset.skillPackage.source.commit.slice(0, 7))}</p><div class="section-actions"><button class="button button-ghost button-small" type="button" data-action="update-github-skill" data-id="${asset.id}">检查 GitHub 更新</button><button class="button button-ghost button-small" type="button" data-action="toggle-pin" data-id="${asset.id}">${asset.pinned ? '取消置顶' : '置顶'}</button><button class="button button-ghost button-small" type="button" data-action="copy-asset" data-id="${asset.id}">复制 SKILL.md</button></div></section><div class="package-tree">${record.files.map((file) => `<details class="package-file" ${file.path === 'SKILL.md' ? 'open' : ''}><summary>${escapeHtml(file.path)} <span>${Math.ceil(file.size / 1024)} KB</span></summary>${isTextFile(file.path, file.contentType) ? `<p class="script-note">${/\.(py|sh|bash|zsh|ps1|js|mjs|cjs)$/i.test(file.path) ? '仅保存，不执行。' : '只读文本。'}</p><pre>${escapeHtml(decodePackageText(file))}</pre>` : '<p class="script-note">二进制资源：仅保存，不执行。</p>'}</details>`).join('')}</div>`;
 }
 
 function renderLockReset() {
   return `<div class="gate"><section class="gate-card"><div class="gate-icon">${lockIcon()}</div><h1>设置新的隐私锁</h1><p>重设后可直接进入私密库并设置新密码。</p><form class="editor-form" id="reset-lock-form"><div class="field"><label>新密码<input id="reset-password" type="password" minlength="6" autocomplete="new-password" required /></label></div><div class="field"><label>再次输入密码<input id="reset-confirm" type="password" minlength="6" autocomplete="new-password" required /></label></div><p class="form-help" id="reset-error" hidden></p><button class="button button-primary" type="submit">设置新密码</button></form><button class="back-button" type="button" data-action="settings">返回设置</button></section></div>`;
 }
 
+function renderSites() {
+  const enabled = new Set(state.database.settings.inPlace.sites);
+  const extra = state.database.settings.inPlace.sites.filter((origin) => !SITE_PRESETS.some((preset) => preset.origin === origin));
+  const presetRows = SITE_PRESETS.map((preset) => `<div class="setting-row"><div><div class="setting-title">${escapeHtml(preset.label)}</div><div class="setting-description">${escapeHtml(siteHost(preset.origin))}</div></div><button class="button button-ghost button-small" type="button" data-action="${enabled.has(preset.origin) ? 'disable-site' : 'enable-site'}" data-origin="${escapeHtml(preset.origin)}">${enabled.has(preset.origin) ? '停用' : '启用'}</button></div>`).join('');
+  const extraRows = extra.map((origin) => `<div class="setting-row"><div><div class="setting-title">${escapeHtml(siteHost(origin))}</div><div class="setting-description">${escapeHtml(origin)}</div></div><button class="button button-ghost button-small" type="button" data-action="disable-site" data-origin="${escapeHtml(origin)}">停用</button></div>`).join('');
+  return `${renderReadOnlyBanner()}${pageHeading('启用站点', 'settings')}<div class="provider-intro">只有启用站点会加载取用面板；FutureContext 只读取你正在输入的输入框里的文字以识别 //。停用会同时撤销该网站的权限。</div><form class="inline-create" id="site-form"><input id="site-origin" placeholder="例如 chat.example.com" required /><button class="button button-primary" type="submit">启用</button></form><div class="settings-list">${presetRows}${extraRows}</div>`;
+}
+
 function render() {
   if (!state.database) return;
   if (state.view === 'editor') app.innerHTML = renderEditor();
-  else if (state.view === 'categories') app.innerHTML = renderCategories();
+  else if (state.view === 'categories') app.innerHTML = renderReadOnlyBanner() + renderCategories();
   else if (state.view === 'settings') app.innerHTML = renderSettings();
-  else if (state.view === 'providers') app.innerHTML = renderProviders();
-  else if (state.view === 'provider-editor') app.innerHTML = renderProviderEditor();
-  else if (state.view === 'thresholds') app.innerHTML = renderThresholds();
-  else if (state.view === 'ai-unlock') app.innerHTML = renderAiUnlock();
-  else if (state.view === 'proposals') app.innerHTML = renderProposals();
+  else if (state.view === 'sites') app.innerHTML = renderSites();
+  else if (state.view === 'providers') app.innerHTML = renderReadOnlyBanner() + renderProviders();
+  else if (state.view === 'provider-editor') app.innerHTML = renderReadOnlyBanner() + renderProviderEditor();
+  else if (state.view === 'thresholds') app.innerHTML = renderReadOnlyBanner() + renderThresholds();
+  else if (state.view === 'ai-unlock') app.innerHTML = renderReadOnlyBanner() + renderAiUnlock();
+  else if (state.view === 'proposals') app.innerHTML = renderReadOnlyBanner() + renderProposals();
   else if (state.view === 'package-detail') app.innerHTML = renderPackageDetail();
-  else if (state.view === 'reset-lock') app.innerHTML = renderLockReset();
+  else if (state.view === 'reset-lock') app.innerHTML = renderReadOnlyBanner() + renderLockReset();
   else app.innerHTML = renderLibrary();
 }
 
@@ -429,10 +515,11 @@ function showConfirm({ title, description, actionLabel, danger = false, onConfir
   confirmDialog.showModal();
 }
 
-async function copyText(text) {
+async function copyText(text, { recordId = null } = {}) {
   try {
     await navigator.clipboard.writeText(text);
     showToast('已复制到剪贴板');
+    if (recordId && !state.readOnly) await commit(recordAssetUse(state.database, recordId));
   } catch {
     showToast('复制失败，请手动复制。');
   }
@@ -662,8 +749,9 @@ async function updateGitHubSkill(id) {
 async function handleClick(event) {
   const button = event.target.closest('button');
   if (!button) {
-    if (!event.target.closest('.category-picker') && state.categoryMenuOpen) {
+    if (!event.target.closest('.category-picker') && (state.categoryMenuOpen || state.sortMenuOpen)) {
       state.categoryMenuOpen = false;
+      state.sortMenuOpen = false;
       render();
     }
     return;
@@ -684,12 +772,21 @@ async function handleClick(event) {
   if (action === 'editor-back') return returnFromEditor();
   if (action === 'new-asset') return openEditor();
   if (action === 'open-asset') return openAsset(assetById(button.dataset.id));
-  if (action === 'copy-asset') return copyText(assetById(button.dataset.id)?.content ?? '');
-  if (action === 'copy-editor') return copyText(editorValues().content);
+  if (action === 'copy-asset') return copyText(assetById(button.dataset.id)?.content ?? '', { recordId: button.dataset.id });
+  if (action === 'copy-editor') return state.editor?.assetId ? copyText(editorValues().content, { recordId: state.editor.assetId }) : copyText(editorValues().content);
   if (action === 'new-category-from-editor') return beginEditorCategoryCreate();
   if (action === 'create-category-from-editor') return createEditorCategory();
   if (action === 'cancel-category-from-editor') { state.editor.categoryCreating = false; return render(); }
-  if (action === 'toggle-category-menu') { state.categoryMenuOpen = !state.categoryMenuOpen; return render(); }
+  if (action === 'toggle-category-menu') { state.categoryMenuOpen = !state.categoryMenuOpen; state.sortMenuOpen = false; return render(); }
+  if (action === 'toggle-sort-menu') { state.sortMenuOpen = !state.sortMenuOpen; state.categoryMenuOpen = false; return render(); }
+  if (action === 'set-sort') { try { await commit(setSortBy(state.database, state.activeTab, button.dataset.sort)); state.sortMenuOpen = false; render(); } catch (error) { showToast(error.message || '排序切换失败。'); } return; }
+  if (action === 'toggle-pin') { try { const asset = assetById(button.dataset.id); await commit(setAssetPinned(state.database, button.dataset.id, !asset?.pinned)); render(); showToast(asset?.pinned ? '已取消置顶' : '已置顶'); } catch (error) { showToast(error.message || '置顶操作失败。'); } return; }
+  if (action === 'dismiss-notice') { state.notice = null; return render(); }
+  if (action === 'enable-current-site') { try { await enableSiteOrigin(state.tabOrigin); render(); } catch (error) { showToast(error.message || '启用失败。'); } return; }
+  if (action === 'ignore-current-site') { try { await commit(ignoreSite(state.database, state.tabOrigin)); render(); } catch (error) { showToast(error.message || '操作失败。'); } return; }
+  if (action === 'manage-sites') { state.view = 'sites'; return render(); }
+  if (action === 'enable-site') { try { await enableSiteOrigin(button.dataset.origin); render(); } catch (error) { showToast(error.message || '启用失败。'); } return; }
+  if (action === 'disable-site') { try { await disableSiteOrigin(button.dataset.origin); render(); } catch (error) { showToast(error.message || '停用失败。'); } return; }
   if (action === 'manage-categories') { state.manageScope = currentScope(); state.categoryEditId = null; state.view = 'categories'; return render(); }
   if (action === 'rename-category') { state.categoryEditId = button.dataset.id; return render(); }
   if (action === 'cancel-category-rename') { state.categoryEditId = null; return render(); }
@@ -804,12 +901,30 @@ async function handleSubmit(event) {
       showToast('分类已重命名');
     } catch (error) { showToast(error.message || '重命名失败。'); }
   }
+  if (form.id === 'site-form') {
+    try {
+      const origin = normalizeSiteOrigin(form.querySelector('#site-origin').value);
+      await enableSiteOrigin(origin);
+      state.view = 'sites';
+      render();
+    } catch (error) { showToast(error.message || '启用失败。'); }
+  }
 }
 
 async function initialize() {
   try {
     state.database = await loadDatabase();
+    state.readOnly = isReadOnlyDatabase(state.database);
     state.activeTab = ['generic', 'skill', 'aigc'].includes(state.database.settings.lastNormalTab) ? state.database.settings.lastNormalTab : 'generic';
+    try {
+      const notice = await sendBackground({ type: 'read-notice' });
+      if (notice?.message) state.notice = notice.message;
+    } catch { /* 后台可能尚未就绪。 */ }
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      state.tabId = tab?.id ?? null;
+      state.tabOrigin = originOfUrl(tab?.url ?? '');
+    } catch { /* 无 tabs 权限时跳过。 */ }
     render();
   } catch {
     app.innerHTML = '<div class="empty-state"><p>无法读取本地资料库。</p></div>';
@@ -833,6 +948,10 @@ app.addEventListener('change', (event) => {
   if (event.target.id === 'ai-enabled') {
     const next = updateAiSettings(state.database, { enabled: event.target.checked });
     void commit(next).then(() => { if (event.target.checked) return sendBackground({ type: 'schedule-ai' }); }).then(() => { render(); showToast(event.target.checked ? '后台 AI 已开启' : '后台 AI 已关闭'); }).catch(() => showToast('更新后台 AI 设置失败。'));
+  }
+  if (event.target.id === 'inplace-enabled' || event.target.id === 'inplace-trigger') {
+    const patch = event.target.id === 'inplace-enabled' ? { enabled: event.target.checked } : { triggerEnabled: event.target.checked };
+    void commit(updateInPlaceSettings(state.database, patch)).then(() => sendBackground({ type: 'sync-sites' })).then(() => { render(); showToast('就地取用设置已保存'); }).catch(() => showToast('更新就地取用设置失败。'));
   }
   if (event.target.id === 'provider-kind') {
     const preset = PROVIDER_PRESETS[event.target.value];
