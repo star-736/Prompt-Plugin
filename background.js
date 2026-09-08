@@ -20,9 +20,9 @@ import {
   verifyPrivacyPassword
 } from './store.js';
 import { buildAssetOrganizationPrompt, buildGroupingPrompt, buildStructurePrompt, chatCompletion, parseAssetResult, parseGroups } from './ai-organizer.js';
-import { checkGitHubSkillUpdate, collectGitHubSkill } from './github-skill.js';
+import { checkGitHubSkillUpdate, collectGitHubSkill, githubSkillUrlError, inspectGitHubSkillUrl, skillContextFromPage } from './github-skill.js';
 import { deletePackage, putPackage } from './package-store.js';
-import { PALETTE_SCRIPT_FILE, PALETTE_SCRIPT_ID, sitePattern } from './in-place.js';
+import { originCoveredBySites, originOfUrl, PALETTE_SCRIPT_FILE, PALETTE_SCRIPT_ID, paletteTypesForUrl, patternsForSites } from './in-place.js';
 
 const SESSION_KEY = 'futurecontext.ai-session';
 const AI_ALARM = 'futurecontext.ai-queue';
@@ -33,27 +33,78 @@ let badgeTimer;
 
 function sessionStorage() { return chrome.storage.session; }
 
+function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+async function permissionGranted(origins, attempts = 3) {
+  for (let index = 0; index < attempts; index += 1) {
+    if (await chrome.permissions.contains({ origins }).catch(() => false)) return true;
+    if (index < attempts - 1) await delay(50);
+  }
+  return false;
+}
+
 // ---- 就地取用：启用站点的 content script 注册 ----
-async function grantedSites(database) {
+async function grantedMatches(database) {
   const sites = database.settings.inPlace.enabled ? database.settings.inPlace.sites : [];
-  const checks = await Promise.all(sites.map((origin) => chrome.permissions.contains({ origins: [sitePattern(origin)] }).catch(() => false)));
-  return sites.filter((_, index) => checks[index]);
+  const patterns = patternsForSites(sites);
+  const checks = await Promise.all(patterns.map((pattern) => permissionGranted([pattern])));
+  return patterns.filter((_, index) => checks[index]);
 }
 async function syncContentScripts() {
   const database = await loadDatabase();
-  const matches = (await grantedSites(database)).map(sitePattern);
+  const matches = await grantedMatches(database);
   const existing = await chrome.scripting.getRegisteredContentScripts({ ids: [PALETTE_SCRIPT_ID] });
   if (!matches.length) { if (existing.length) await chrome.scripting.unregisterContentScripts({ ids: [PALETTE_SCRIPT_ID] }); return { sites: 0 }; }
-  const script = { id: PALETTE_SCRIPT_ID, js: [PALETTE_SCRIPT_FILE], matches, runAt: 'document_idle', allFrames: false, persistAcrossSessions: true };
+  const script = { id: PALETTE_SCRIPT_ID, js: [PALETTE_SCRIPT_FILE], matches, runAt: 'document_idle', allFrames: true, persistAcrossSessions: true };
   if (existing.length) await chrome.scripting.updateContentScripts([script]); else await chrome.scripting.registerContentScripts([script]);
   return { sites: matches.length };
 }
 async function activeTab() { const [tab] = await chrome.tabs.query({ active: true, currentWindow: true }); return tab ?? null; }
 async function notifyTab(tabId, text) { if (!tabId) return; try { await chrome.tabs.sendMessage(tabId, { type: 'fc-toast', text }); } catch { /* 未启用站点没有页面代码，静默。 */ } }
+async function injectPalette(tabId) {
+  await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: [PALETTE_SCRIPT_FILE] });
+}
+async function invokeOpenPalette(tabId) {
+  const results = await chrome.scripting.executeScript({
+    target: { tabId, allFrames: true },
+    func: () => {
+      const api = globalThis.__futureContextPalette;
+      if (!api?.openFromShortcut) return 'missing';
+      return api.openFromShortcut() ? 'opened' : 'idle';
+    }
+  });
+  const values = (results ?? []).map((item) => item?.result);
+  if (values.includes('opened')) return;
+  if (values.length && values.every((value) => value === 'idle')) return;
+  throw new Error('Could not establish connection. Receiving end does not exist.');
+}
 async function openPaletteInActiveTab() {
-  const tab = await activeTab(); if (!tab?.id) return;
-  try { await chrome.tabs.sendMessage(tab.id, { type: 'fc-open-palette' }); }
-  catch { await flashBadge('!', '这个网站还没有启用就地取用。在弹窗顶部或设置中启用后再按快捷键。'); }
+  const tab = await activeTab();
+  if (!tab?.id) return;
+  const origin = originOfUrl(tab.url ?? '');
+  const database = await loadDatabase();
+  const inPlace = database.settings.inPlace;
+  const covered = Boolean(origin && inPlace.enabled && originCoveredBySites(origin, inPlace.sites));
+  try {
+    await invokeOpenPalette(tab.id);
+    return;
+  } catch (error) {
+    if (covered) {
+      try {
+        await injectPalette(tab.id);
+        await delay(80);
+        await invokeOpenPalette(tab.id);
+        return;
+      } catch (retryError) {
+        await flashBadge('!', `无法在当前页打开取用面板：${retryError.message || error.message || '页面代码未加载'}`);
+        return;
+      }
+    }
+    const hint = origin
+      ? '当前网站还没启用就地取用，请在弹窗里点启用'
+      : '当前页面无法使用就地取用。请打开一个已启用的 AI 网站后再按快捷键。';
+    await flashBadge('!', `${hint}（${error.message || '没有页面代码在听'}）`);
+    try { await chrome.action.openPopup(); } catch { /* 个别环境不支持程序打开弹窗。 */ }
+  }
 }
 
 // ---- 就地保存：右键菜单 ----
@@ -88,6 +139,15 @@ function ensureContextMenu() {
 function paletteSummary(asset) {
   const preview = (asset.type === 'skill' && asset.skillDescription ? asset.skillDescription : asset.content).replace(/\s+/g, ' ').trim();
   return { id: asset.id, type: asset.type, typeLabel: paletteLabels[asset.type] ?? asset.type, title: displayTitle(asset), preview: preview.slice(0, 160), pinned: Boolean(asset.pinned) };
+}
+async function palettePageUrl(sender) {
+  if (sender?.tab?.url) return sender.tab.url;
+  return (await activeTab())?.url ?? '';
+}
+async function queryPalette(query, sender) {
+  const db = await loadDatabase();
+  const types = paletteTypesForUrl(await palettePageUrl(sender));
+  return paletteAssets(db, query ?? '', 8, { types }).map(paletteSummary);
 }
 async function paletteInsert(id) {
   const database = await loadDatabase();
@@ -191,17 +251,51 @@ async function testProvider(id) {
 
 function githubPageContext() {
   const meta = (name) => document.querySelector(`meta[name="${name}"]`)?.getAttribute('content') ?? '';
+  const attr = (selector, name) => document.querySelector(selector)?.getAttribute(name) ?? '';
   const repository = meta('octolytics-dimension-repository_nwo');
-  const commit = meta('octolytics-dimension-commit_id');
-  const path = meta('octolytics-dimension-path') || document.querySelector('[data-path]')?.getAttribute('data-path') || '';
-  return { repository, commit, path, url: location.href };
+  let commit = meta('octolytics-dimension-commit_id') || attr('[data-commit-oid]', 'data-commit-oid') || attr('[data-oid]', 'data-oid') || '';
+  let path = meta('octolytics-dimension-path') || attr('[data-path]', 'data-path') || '';
+  const permalink = attr('a[data-hotkey="y"]', 'href');
+  const permalinkSha = permalink.match(/\/(?:blob|raw)\/([0-9a-f]{40})\//i);
+  if (!commit && permalinkSha) commit = permalinkSha[1];
+  const parts = decodeURIComponent(location.pathname || '').replace(/\/+$/, '').split('/').filter(Boolean);
+  const parsedRepo = parts.length >= 2 ? `${parts[0]}/${parts[1]}` : '';
+  const route = parts[2] === 'blob' || parts[2] === 'tree' ? parts[2] : '';
+  const rest = route ? parts.slice(3) : [];
+  let ref = '';
+  let parsedPath = '';
+  if (rest[0] === 'refs' && (rest[1] === 'heads' || rest[1] === 'tags') && rest.length >= 4) {
+    ref = rest[2];
+    parsedPath = rest.slice(3).join('/');
+  } else if (rest.length >= 2) {
+    ref = rest[0];
+    parsedPath = rest.slice(1).join('/');
+  }
+  return { repository: repository || parsedRepo, commit, path: path || parsedPath, ref, url: location.href };
 }
 
-async function collectFromActiveTab() {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.id || !String(tab.url).startsWith('https://github.com/')) throw new Error('请先打开公开 GitHub 仓库中的具体 SKILL.md 文件页面。');
-  const [injected] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: githubPageContext });
-  const packageRecord = await collectGitHubSkill(injected?.result);
+async function resolveCollectTab(message = {}) {
+  if (message.tabId) {
+    try { return await chrome.tabs.get(message.tabId); } catch { return null; }
+  }
+  const [current] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (current?.id && current.url && !/^(chrome|edge|about|chrome-extension):/i.test(current.url)) return current;
+  const [focused] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  return focused ?? current ?? null;
+}
+
+async function collectFromActiveTab(message = {}) {
+  const tab = await resolveCollectTab(message);
+  const url = message.url || tab?.url || '';
+  const inspection = inspectGitHubSkillUrl(url);
+  if (inspection.kind !== 'skill-file') throw new Error(githubSkillUrlError(inspection.kind));
+  if (!tab?.id) throw new Error('无法读取该文件页的仓库信息，请刷新后重试。');
+  let injected = {};
+  try {
+    const [result] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: githubPageContext });
+    injected = result?.result ?? {};
+  } catch { /* 新 UI 或缺 meta 时改用 URL / API。 */ }
+  const packageRecord = await collectGitHubSkill(skillContextFromPage(inspection, injected));
   await putPackage(packageRecord);
   const database = await loadDatabase();
   const saved = saveGithubSkillAsset(database, packageRecord);
@@ -228,7 +322,7 @@ chrome.runtime.onInstalled.addListener(() => { ensureContextMenu(); void syncCon
 chrome.runtime.onStartup.addListener(() => { void sessionStorage().remove(SESSION_KEY); void syncContentScripts(); });
 chrome.contextMenus.onClicked.addListener((info, tab) => { if (info.menuItemId === CAPTURE_MENU_ID) void captureFromMenu(info, tab); });
 chrome.commands.onCommand.addListener((command) => { if (command === 'open-palette') void openPaletteInActiveTab(); });
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const run = async () => {
     if (message.type === 'schedule-ai') { await scheduleAi(); return { ok: true }; }
     if (message.type === 'process-ai-now') { await processAiQueue(); return { ok: true }; }
@@ -247,10 +341,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === 'clear-ai-session') { await sessionStorage().remove(SESSION_KEY); return { ok: true }; }
     if (message.type === 'test-provider') return testProvider(message.id);
     if (message.type === 'queue-existing') return queueExisting();
-    if (message.type === 'collect-github-skill') return collectFromActiveTab();
+    if (message.type === 'collect-github-skill') return collectFromActiveTab(message);
     if (message.type === 'update-github-skill') return updateGitHubSkill(message.assetId);
     if (message.type === 'palette-settings') { const db = await loadDatabase(); return { enabled: db.settings.inPlace.enabled, triggerEnabled: db.settings.inPlace.triggerEnabled }; }
-    if (message.type === 'palette-query') { const db = await loadDatabase(); return paletteAssets(db, message.query ?? '').map(paletteSummary); }
+    if (message.type === 'palette-query') return queryPalette(message.query ?? '', sender);
     if (message.type === 'palette-insert') return paletteInsert(message.id);
     if (message.type === 'sync-sites') return syncContentScripts();
     if (message.type === 'read-notice') { const stored = await sessionStorage().get(NOTICE_KEY); const notice = stored[NOTICE_KEY]; await sessionStorage().remove(NOTICE_KEY); return { message: notice?.message ?? null }; }

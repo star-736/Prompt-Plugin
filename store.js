@@ -243,12 +243,14 @@ export function usageSummary(database, now = Date.now()) {
   return { week: within(7), month: within(30), total: database.assets.reduce((sum, asset) => sum + (asset.useCount ?? 0), 0), sites: database.settings?.inPlace?.sites?.length ?? 0 };
 }
 
-// 取用面板：跨类型搜索普通库；私密库永不出现。
-export function paletteAssets(database, query = '', limit = 8) {
+// 取用面板：搜索普通库；私密库永不出现。types 缺省时三种都出。
+export function paletteAssets(database, query = '', limit = 8, { types } = {}) {
   const needle = String(query ?? '').trim().replace(/\s+/g, ' ').toLocaleLowerCase(); const names = categoryNameMap(database);
+  const allowed = Array.isArray(types) ? new Set(types.filter((type) => ASSET_TYPES.includes(type))) : null;
   const scored = [];
   for (const asset of database.assets) {
     if (asset.privacy !== 'normal') continue;
+    if (allowed && !allowed.has(asset.type)) continue;
     let score = 0;
     if (needle) {
       if (displayTitle(asset).toLocaleLowerCase().includes(needle)) score = 2;

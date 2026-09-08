@@ -39,7 +39,8 @@ import {
 } from './store.js';
 import { PROVIDER_PRESETS, providerOrigin } from './ai-organizer.js';
 import { deletePackage, exportPackages, getPackage, importPackages, isTextFile } from './package-store.js';
-import { normalizeSiteOrigin, originOfUrl, PALETTE_SCRIPT_FILE, SHORTCUT_LABEL, SITE_PRESETS, siteHost, sitePattern } from './in-place.js';
+import { githubSkillUrlError, inspectGitHubSkillUrl } from './github-skill.js';
+import { isPromptableSite, normalizeSiteOrigin, originCoveredBySites, originOfUrl, PALETTE_SCRIPT_FILE, patternsForSites, relatedMatchPatterns, SHORTCUT_LABEL, SITE_PRESETS, siteHost } from './in-place.js';
 
 const app = document.querySelector('#app');
 const toast = document.querySelector('#toast');
@@ -63,6 +64,7 @@ const state = {
   readOnly: false,
   notice: null,
   tabId: null,
+  tabUrl: '',
   tabOrigin: null,
   editor: null,
   manageScope: null,
@@ -99,7 +101,7 @@ function chevronIcon() {
 }
 
 function pinIcon() {
-  return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 17v5"/><path d="M9 3h6l1 7-4 3-4-3z"/></svg>';
+  return '<svg viewBox="0 0 24 24" aria-hidden="true"><rect class="pin-head" x="6.5" y="3.5" width="11" height="8" rx="4"/><path d="M12 11.5v9.5"/></svg>';
 }
 
 function isPrivateView() {
@@ -159,9 +161,9 @@ function renderNoticeBanner() {
 
 function renderSiteHint() {
   const inPlace = state.database.settings.inPlace;
-  if (!inPlace.enabled || !state.tabOrigin || inPlace.sites.includes(state.tabOrigin) || inPlace.ignoredSites.includes(state.tabOrigin)) return '';
+  if (!inPlace.enabled || !state.tabOrigin || !isPromptableSite(state.tabOrigin) || inPlace.sites.includes(state.tabOrigin) || inPlace.ignoredSites.includes(state.tabOrigin)) return '';
   const host = siteHost(state.tabOrigin);
-  return `<div class="site-hint"><span>在 ${escapeHtml(host)} 启用就地取用</span><span class="site-hint-actions"><button class="button button-primary button-small" type="button" data-action="enable-current-site">启用</button><button class="button button-ghost button-small" type="button" data-action="ignore-current-site">忽略</button></span></div>`;
+  return `<div class="site-hint"><span>要在 ${escapeHtml(host)} 用 // 或 ${SHORTCUT_LABEL} 取用，请先启用此站点。启用后当前页立即生效，不必刷新。</span><span class="site-hint-actions"><button class="button button-primary button-small" type="button" data-action="enable-current-site">启用</button><button class="button button-ghost button-small" type="button" data-action="ignore-current-site">忽略</button></span></div>`;
 }
 
 function renderSortPicker() {
@@ -177,18 +179,37 @@ function renderSortPicker() {
 }
 
 async function enableSiteOrigin(origin) {
-  await requestOrigins([sitePattern(origin)]);
+  await requestOrigins(relatedMatchPatterns(origin));
   await commit(enableSite(state.database, origin));
-  await sendBackground({ type: 'sync-sites' });
-  if (state.tabId && state.tabOrigin === origin) {
-    try { await chrome.scripting.executeScript({ target: { tabId: state.tabId }, files: [PALETTE_SCRIPT_FILE] }); } catch { /* 当前页可能尚未授权。 */ }
+  try {
+    await sendBackground({ type: 'sync-sites' });
+  } catch (error) {
+    showToast(`启用后同步失败：${error.message || '后台无响应'}`);
+    throw error;
+  }
+  if (state.tabId && state.tabOrigin && originCoveredBySites(state.tabOrigin, [origin])) {
+    try {
+      await chrome.scripting.executeScript({ target: { tabId: state.tabId, allFrames: true }, files: [PALETTE_SCRIPT_FILE] });
+    } catch (error) {
+      showToast(`启用后无法注入页面代码：${error.message || '未知错误'}`);
+      return;
+    }
+    try {
+      await chrome.tabs.sendMessage(state.tabId, { type: 'fc-ping' });
+    } catch (error) {
+      showToast(`已授权但当前页未响应：${error.message || '请刷新页面后再试'}`);
+      return;
+    }
+    showToast(`已启用就地取用，当前页可直接输入 // 或按 ${SHORTCUT_LABEL}`);
+    return;
   }
   showToast('已启用就地取用');
 }
 
 async function disableSiteOrigin(origin) {
   await commit(disableSite(state.database, origin));
-  try { await chrome.permissions.remove({ origins: [sitePattern(origin)] }); } catch { /* 权限可能已撤销。 */ }
+  const leftover = relatedMatchPatterns(origin).filter((pattern) => !patternsForSites(state.database.settings.inPlace.sites).includes(pattern));
+  try { if (leftover.length) await chrome.permissions.remove({ origins: leftover }); } catch { /* 权限可能已撤销。 */ }
   await sendBackground({ type: 'sync-sites' });
   showToast('已停用就地取用');
 }
@@ -338,7 +359,7 @@ function renderSettings() {
   return `${renderReadOnlyBanner()}${pageHeading('设置', 'library')}<div class="settings-list">
     <div class="setting-row"><div><div class="setting-title">隐私锁</div><div class="setting-description">${lockStatus}。重设不会删除私密内容。</div></div><button class="button button-ghost button-small" type="button" data-action="reset-lock">${hasPrivacyLock(state.database) ? '重设隐私锁' : '设置隐私锁'}</button></div>
     <div class="setting-row setting-row-stack"><div><div class="setting-title">后台 AI 整理</div><div class="setting-description">${escapeHtml(status)}${current ? ` 当前 Provider：${escapeHtml(current.label)}。` : ' 还未配置 Provider。'}</div></div><div class="setting-actions"><label class="switch-label"><input id="ai-enabled" type="checkbox" ${ai.enabled ? 'checked' : ''} />开启</label><button class="button button-ghost button-small" type="button" data-action="manage-providers">Provider</button></div></div>
-    <div class="setting-row setting-row-stack"><div><div class="setting-title">就地取用</div><div class="setting-description">在启用站点的输入框输入 // 或按 ${SHORTCUT_LABEL} 调出取用面板。已启用 ${inPlace.sites.length} 个站点。</div></div><div class="setting-actions"><label class="switch-label"><input id="inplace-enabled" type="checkbox" ${inPlace.enabled ? 'checked' : ''} />开启</label><label class="switch-label"><input id="inplace-trigger" type="checkbox" ${inPlace.triggerEnabled ? 'checked' : ''} />// 触发符</label><button class="button button-ghost button-small" type="button" data-action="manage-sites">站点</button></div></div>
+    <div class="setting-row setting-row-stack"><div><div class="setting-title">就地取用</div><div class="setting-description">在启用站点的输入框输入 // 或按 ${SHORTCUT_LABEL} 调出取用面板。已启用 ${inPlace.sites.length} 个站点。实际快捷键以 edge://extensions/shortcuts（Chrome 为 chrome://extensions/shortcuts）为准；被浏览器占用时可在那里改绑。</div></div><div class="setting-actions"><label class="switch-label"><input id="inplace-enabled" type="checkbox" ${inPlace.enabled ? 'checked' : ''} />开启</label><label class="switch-label"><input id="inplace-trigger" type="checkbox" ${inPlace.triggerEnabled ? 'checked' : ''} />// 触发符</label><button class="button button-ghost button-small" type="button" data-action="manage-sites">站点</button></div></div>
     <div class="setting-row"><div><div class="setting-title">取用概览</div><div class="setting-description">本周 ${usage.week} 次 · 近 30 天 ${usage.month} 次 · 累计 ${usage.total} 次</div></div><span></span></div>
     <div class="setting-row"><div><div class="setting-title">整理现有内容</div><div class="setting-description">仅处理通用 Prompt 与 Skill；AIGC 永不发送。</div></div><button class="button button-ghost button-small" type="button" data-action="organize-existing">整理</button></div>
     <div class="setting-row"><div><div class="setting-title">分类结构建议</div><div class="setting-description">已有分类的合并、重命名或拆分必须由你确认应用。</div></div><button class="button button-ghost button-small" type="button" data-action="view-proposals">${ai.proposals.filter((proposal) => proposal.status === 'pending').length ? '查看建议' : '暂无建议'}</button></div>
@@ -726,12 +747,38 @@ async function resolveProposal(id, action) {
   showToast(action === 'apply' ? '分类方案已应用' : '已保留当前分类');
 }
 
+function isRestrictedTabUrl(url) {
+  return !url || /^(chrome|edge|about|chrome-extension|devtools):/i.test(url);
+}
+
+async function queryContentTab() {
+  const [current] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (current?.id && !isRestrictedTabUrl(current.url)) return current;
+  const [focused] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  if (focused?.id && !isRestrictedTabUrl(focused.url)) return focused;
+  return current ?? focused ?? null;
+}
+
 async function collectGitHubSkillFromPage() {
   try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!String(tab?.url ?? '').startsWith('https://github.com/')) throw new Error('请先打开公开 GitHub 仓库中的具体 SKILL.md 文件页面。');
+    let tabId = state.tabId;
+    let tabUrl = state.tabUrl || '';
     await requestOrigins(['https://github.com/*', 'https://api.github.com/*']);
-    const result = await sendBackground({ type: 'collect-github-skill' });
+    if (tabId) {
+      try {
+        const tab = await chrome.tabs.get(tabId);
+        if (tab?.url) tabUrl = tab.url;
+      } catch { /* 打开弹窗时的标签可能已关闭。 */ }
+    }
+    if (isRestrictedTabUrl(tabUrl)) {
+      const tab = await queryContentTab();
+      tabId = tab?.id ?? tabId;
+      tabUrl = tab?.url || tabUrl;
+    }
+    const inspection = inspectGitHubSkillUrl(tabUrl);
+    if (inspection.kind !== 'skill-file') throw new Error(githubSkillUrlError(inspection.kind));
+    if (!tabId) throw new Error('无法读取该文件页的仓库信息，请刷新后重试。');
+    const result = await sendBackground({ type: 'collect-github-skill', tabId, url: tabUrl });
     state.database = await loadDatabase(); render();
     showToast(result.duplicate ? '已是当前保存版本' : 'GitHub Skill 已保存');
   } catch (error) { showToast(error.message || '收集 GitHub Skill 失败。'); }
@@ -921,8 +968,9 @@ async function initialize() {
       if (notice?.message) state.notice = notice.message;
     } catch { /* 后台可能尚未就绪。 */ }
     try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const tab = await queryContentTab();
       state.tabId = tab?.id ?? null;
+      state.tabUrl = tab?.url ?? '';
       state.tabOrigin = originOfUrl(tab?.url ?? '');
     } catch { /* 无 tabs 权限时跳过。 */ }
     render();

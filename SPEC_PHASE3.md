@@ -24,19 +24,20 @@
 ### 启用站点
 
 - 设置页新增“就地取用”区域：总开关、启用站点列表、触发符开关、快捷键说明。
-- 弹窗主界面顶部在当前标签页为可启用的 `https://` 网站时，显示一行轻提示“在 {域名} 启用就地取用”；点击后请求该域名的可选主机权限，成功后该站成为启用站点。
-- 设置页提供常见 AI 站点的预设列表（ChatGPT、Claude、Gemini、DeepSeek、Kimi、通义、豆包、Perplexity、Grok、Copilot），一键启用；也接受用户输入任意 `https://` 域名。
+- 弹窗主界面顶部仅对常见 AI 站点提示启用就地取用；其它站点在设置里手动启用。点击后请求该域名的可选主机权限，成功后该站成为启用站点。
+- 设置页提供常见 AI 站点的预设列表（ChatGPT、Claude、Gemini、DeepSeek、Kimi、Grok），一键启用；也接受用户输入任意 `https://` 域名。
 - 停用某站点时同步撤销该域名的主机权限并卸载页面代码。
 - 未启用的网站上不注册任何 content script。
 
 ### 触发与面板
 
 - 在启用站点，当用户在 `textarea`、`input[type=text]` 或 `contenteditable` 元素中连续输入 `//` 时，面板出现在该输入框上方（空间不足时在下方）；继续输入的字符作为搜索词并实时过滤。
-- 面板也可由快捷键唤起，默认 `Alt+Shift+P`，用户可在 `edge://extensions/shortcuts` 修改。快捷键唤起时不要求已输入 `//`。
+- 面板也可由快捷键唤起，默认 `Alt+Shift+F`，用户可在 `edge://extensions/shortcuts`（Chrome 为 `chrome://extensions/shortcuts`）修改。快捷键唤起时不要求已输入 `//`。
 - 使用 `//` 而不是单个 `/`，避免与 ChatGPT、Claude 等站点自带的斜杠菜单冲突。用户可在设置中关闭触发符，仅保留快捷键。
 - 面板列出最多 8 条结果，每条显示：类型标记（通用 / Skill / AIGC）、标题（或正文摘要）、一行内容摘要、置顶标记。
 - 排序：置顶优先 → 标题匹配优先于正文匹配 → 取用次数降序 → 最近编辑降序。搜索词为空时按置顶、取用次数、最近编辑排序。
-- 搜索范围为通用 Prompt、Skill 与普通 AIGC Prompt，跨类型合并展示；私密 AIGC 永不出现。搜索匹配标题、正文与分类名，忽略大小写和多余空白。
+- 搜索范围按当前页面 URL 过滤类型：聊天页（含 ChatGPT / Claude / Gemini / DeepSeek / Kimi / Grok 聊天页，以及用户手动启用的其它站）只搜通用 Prompt 与 Skill，不含 AIGC；`grok.com/imagine`（含子路径）仅搜普通 AIGC Prompt。私密 AIGC 永不出现。搜索匹配标题、正文与分类名，忽略大小写和多余空白。
+- 匹配必须看 path，不能只看 origin：`https://grok.com/` 与 `https://grok.com/imagine` 同源，前者不含 AIGC、后者仅 AIGC。
 - 键盘：↑↓ 切换、Enter 或 Tab 插入、Esc 关闭并保留已输入的 `//` 文本。鼠标点击结果同样插入。
 - 插入时删除用户输入的 `//` 与搜索词，把资产的完整内容写入光标处；Skill 插入完整 `SKILL.md` 原文。插入后光标落在内容末尾，不自动发送。
 - 若输入框不可写（如富文本编辑器拒绝程序化写入），退化为复制到剪贴板并在面板位置显示“已复制，请粘贴”。
@@ -91,7 +92,7 @@
 
 - `manifest.json` 新增 `contextMenus`。
 - 就地取用所需的站点权限全部走 `optional_host_permissions`，仅在用户启用某站点时请求；停用时撤销。
-- 快捷键通过 `commands` 声明，默认 `Alt+Shift+P`。
+- 快捷键通过 `commands` 声明，默认 `Alt+Shift+F`。
 - 不新增 `tabs`、`webNavigation`、`clipboardRead` 或任何默认生效的主机权限。
 
 ## 数据与兼容性

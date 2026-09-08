@@ -3,7 +3,7 @@
   "name": "FutureContext",
   "version": "0.3.0",
   "description": "A local-first library for reusable AI prompts, Skills, and private AIGC ideas.",
-  "permissions": ["storage", "activeTab", "scripting", "alarms", "permissions", "contextMenus"],
+  "permissions": ["storage", "activeTab", "scripting", "alarms", "contextMenus"],
   "optional_host_permissions": [
     "https://api.github.com/*",
     "https://github.com/*",
@@ -19,7 +19,7 @@
   },
   "commands": {
     "open-palette": {
-      "suggested_key": { "default": "Alt+Shift+P" },
+      "suggested_key": { "default": "Alt+Shift+F" },
       "description": "打开 FutureContext 取用面板"
     }
   },

@@ -242,6 +242,17 @@ test('paletteAssets limit applies', () => {
   assert.equal(paletteAssets(database, '', 8).length, 8);
 });
 
+test('paletteAssets types option filters ordinary library entries', () => {
+  let database = createEmptyDatabase();
+  database = saveAsset(database, { type: 'generic', title: 'g', content: 'g' }, { id: 'g1', now: 1 }).database;
+  database = saveAsset(database, { type: 'skill', content: skill }, { id: 's1', now: 2 }).database;
+  database = saveAsset(database, { type: 'aigc', content: 'visual' }, { id: 'a1', now: 3 }).database;
+  database = saveAsset(database, { type: 'aigc', privacy: 'private', content: 'secret' }, { id: 'p1', now: 4 }).database;
+  assert.deepEqual(paletteAssets(database, '', 8).map((a) => a.id), ['a1', 's1', 'g1']);
+  assert.deepEqual(paletteAssets(database, '', 8, { types: ['generic', 'skill'] }).map((a) => a.id), ['s1', 'g1']);
+  assert.deepEqual(paletteAssets(database, '', 8, { types: ['generic', 'skill', 'aigc'] }).map((a) => a.id), ['a1', 's1', 'g1']);
+});
+
 test('captureSelection rejects empty text and queues when AI enabled', () => {
   assert.throws(() => captureSelection(createEmptyDatabase(), '   '), /为空/);
   let database = updateAiSettings(createEmptyDatabase(), { enabled: true });
