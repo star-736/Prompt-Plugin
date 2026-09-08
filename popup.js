@@ -42,7 +42,7 @@ import {
 import { PROVIDER_PRESETS, providerOrigin } from './ai-organizer.js';
 import { deletePackage, exportPackages, getPackage, importPackages, isTextFile } from './package-store.js';
 import { githubSkillUrlError, inspectGitHubSkillUrl } from './github-skill.js';
-import { isPromptableSite, normalizeSiteOrigin, originCoveredBySites, originOfUrl, PALETTE_SCRIPT_FILE, patternsForSites, relatedMatchPatterns, SHORTCUT_LABEL, SITE_PRESETS, siteHost } from './in-place.js';
+import { isPromptableSite, isRestrictedTabUrl, normalizeSiteOrigin, originCoveredBySites, originOfUrl, PALETTE_SCRIPT_FILE, patternsForSites, relatedMatchPatterns, SHORTCUT_LABEL, SITE_PRESETS, siteHost } from './in-place.js';
 
 const app = document.querySelector('#app');
 const toast = document.querySelector('#toast');
@@ -785,10 +785,6 @@ async function resolveProposal(id, action) {
   await commit(resolveStructureProposal(state.database, id, action));
   render();
   showToast(action === 'apply' ? '分类方案已应用' : '已保留当前分类');
-}
-
-function isRestrictedTabUrl(url) {
-  return !url || /^(chrome|edge|about|chrome-extension|devtools):/i.test(url);
 }
 
 async function queryContentTab() {

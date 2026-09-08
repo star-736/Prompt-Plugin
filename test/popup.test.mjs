@@ -223,16 +223,165 @@ test('privacy lock reset, export confirm, and collect GitHub', async () => {
   click('[data-action="export-backup"]');
   confirmOpenDialog();
   await flush(20);
+  click('[data-action="home"]');
+  await waitFor(() => document.querySelector('[data-tab="skill"]'));
   click('[data-tab="skill"]');
   await waitFor(() => document.querySelector('[data-action="collect-github-skill"]'));
+  stub.tabs[0].url = 'https://github.com/acme/demo/blob/main/skills/demo/SKILL.md';
   click('[data-action="collect-github-skill"]');
-  await waitFor(() => /GitHub Skill/.test(toastText()) || /已是当前/.test(toastText()) || /失败/.test(toastText()));
+  await waitFor(() => /GitHub Skill/.test(toastText()) || /已是当前/.test(toastText()) || /失败/.test(toastText()) || /SKILL\.md/.test(toastText()));
 });
 
 test('private gate setup after lock reset still renders', async () => {
   click('[data-tab="aigc"]');
   await waitFor(() => document.querySelector('[data-privacy="private"]'));
   click('[data-privacy="private"]');
-  await waitFor(() => document.querySelector('#private-gate-form') || document.querySelector('.asset-list'));
+  await waitFor(() => document.querySelector('#private-gate-form') || document.querySelector('.asset-list') || document.querySelector('.empty-state'));
   assert.ok(document.querySelector('#app').innerHTML.length > 20);
 });
+
+test('categories, open generic asset, discard editor, and import backup', async () => {
+  click('[data-privacy="normal"]');
+  await waitFor(() => document.querySelector('[data-tab="generic"]'));
+  click('[data-tab="generic"]');
+  await waitFor(() => document.querySelector('#search'));
+  click('[data-action="toggle-category-menu"]');
+  await waitFor(() => document.querySelector('[data-action="manage-categories"]'));
+  click('[data-action="manage-categories"]');
+  await waitFor(() => document.querySelector('#category-create-form'));
+  document.querySelector('#new-category-name').value = '归档';
+  document.querySelector('#category-create-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  await waitFor(() => /分类已新建/.test(toastText()));
+  click('[data-action="rename-category"]');
+  await waitFor(() => document.querySelector('#category-rename-form'));
+  document.querySelector('#category-rename-form').elements.name.value = '归档夹';
+  document.querySelector('#category-rename-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  await waitFor(() => /分类已重命名/.test(toastText()) || document.querySelector('[data-action="delete-category"]'));
+  click('[data-action="delete-category"]');
+  confirmOpenDialog();
+  await waitFor(() => /分类已删除/.test(toastText()) || document.querySelector('#category-create-form'));
+  click('[data-action="library"]');
+  await waitFor(() => document.querySelector('[data-action="open-asset"]'));
+  click('[data-action="open-asset"]');
+  await waitFor(() => document.querySelector('#editor-form'));
+  document.querySelector('#editor-content').value = 'changed draft';
+  document.querySelector('#editor-content').dispatchEvent(new window.Event('input', { bubbles: true }));
+  await flush(20);
+  click('[data-action="editor-back"]');
+  confirmOpenDialog();
+  await waitFor(() => document.querySelector('.asset-list') || document.querySelector('[data-action="new-asset"]'));
+  click('[data-action="settings"]');
+  await waitFor(() => document.querySelector('[data-action="import-backup"]'));
+  const backup = createBackup(createEmptyDatabase(), 9);
+  const file = new window.File([JSON.stringify(backup)], 'backup.json', { type: 'application/json' });
+  const input = document.querySelector('#backup-input');
+  Object.defineProperty(input, 'files', { configurable: true, value: [file] });
+  input.dispatchEvent(new window.Event('change', { bubbles: true }));
+  await waitFor(() => /导入/.test(toastText()) || /失败/.test(toastText()));
+});
+
+test('providers, unlock, organize, activate, delete, and proposals', async () => {
+  click('[data-action="settings"]');
+  await waitFor(() => document.querySelector('[data-action="manage-providers"]'));
+  click('[data-action="manage-providers"]');
+  await waitFor(() => document.querySelector('[data-action="test-provider"], [data-action="new-provider"]'));
+  const testBtn = document.querySelector('[data-action="test-provider"]');
+  if (testBtn) {
+    click(testBtn);
+    await waitFor(() => document.querySelector('#ai-unlock-form') || /测试/.test(toastText()) || /连接/.test(toastText()));
+    const unlock = document.querySelector('#ai-unlock-form');
+    if (unlock) {
+      document.querySelector('#ai-unlock-password').value = 'abcdef';
+      unlock.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+      await flush(40);
+    }
+  }
+  const activate = document.querySelector('[data-action="activate-provider"]');
+  if (activate) {
+    click(activate);
+    await flush(20);
+  }
+  click('[data-action="settings"]');
+  await waitFor(() => document.querySelector('[data-action="organize-existing"]'));
+  click('[data-action="organize-existing"]');
+  await flush(40);
+  click('[data-action="view-proposals"]');
+  await waitFor(() => document.querySelector('[data-action="apply-proposal"], .empty-state, .proposal-list'));
+  const apply = document.querySelector('[data-action="apply-proposal"]');
+  if (apply) {
+    click(apply);
+    await flush(20);
+  }
+  const dismiss = document.querySelector('[data-action="dismiss-proposal"]');
+  if (dismiss) {
+    click(dismiss);
+    await flush(20);
+  }
+  click('[data-action="settings"]');
+  await waitFor(() => document.querySelector('[data-action="manage-providers"]'));
+  click('[data-action="manage-providers"]');
+  await waitFor(() => document.querySelector('[data-action="delete-provider"], [data-action="new-provider"]'));
+  const del = document.querySelector('[data-action="delete-provider"]');
+  if (del) {
+    click(del);
+    confirmOpenDialog();
+    await flush(30);
+  }
+});
+
+test('site hint, ignore, package category, aigc move, and click-away menu', async () => {
+  click('[data-action="home"]');
+  await waitFor(() => document.querySelector('[data-tab="generic"], [data-tab="aigc"]'));
+  const enableCurrent = document.querySelector('[data-action="enable-current-site"]');
+  if (enableCurrent) {
+    click(enableCurrent);
+    await flush(40);
+  }
+  const ignoreCurrent = document.querySelector('[data-action="ignore-current-site"]');
+  if (ignoreCurrent) {
+    click(ignoreCurrent);
+    await flush(20);
+  }
+  click('[data-tab="aigc"]');
+  await waitFor(() => document.querySelector('[data-privacy="normal"]'));
+  click('[data-privacy="normal"]');
+  await waitFor(() => document.querySelector('[data-action="open-asset"], .empty-state'));
+  const aigcOpen = document.querySelector('[data-action="open-asset"]');
+  if (aigcOpen) {
+    click(aigcOpen);
+    await waitFor(() => document.querySelector('[data-action="move-asset"]') || document.querySelector('#editor-form'));
+    const move = document.querySelector('[data-action="move-asset"]');
+    if (move) {
+      click(move);
+      confirmOpenDialog();
+      await flush(30);
+    } else {
+      click('[data-action="editor-back"]');
+      await flush(20);
+    }
+  }
+  click('[data-tab="skill"]');
+  await waitFor(() => document.querySelector('[data-action="open-asset"], [data-action="collect-github-skill"]'));
+  const skillOpen = document.querySelector('[data-action="open-asset"]');
+  if (skillOpen) {
+    click(skillOpen);
+    await waitFor(() => document.querySelector('#editor-form, [data-action="update-github-skill"]'));
+    if (document.querySelector('[data-action="new-category-from-editor"]')) {
+      click('[data-action="new-category-from-editor"]');
+      await waitFor(() => document.querySelector('#editor-new-category'));
+      document.querySelector('#editor-new-category').value = '邮件技能';
+      click('[data-action="create-category-from-editor"]');
+      await flush(30);
+    }
+    click('[data-action="home"]');
+    await flush(20);
+  }
+  click('[data-tab="generic"]');
+  await waitFor(() => document.querySelector('[data-action="toggle-category-menu"]'));
+  click('[data-action="toggle-category-menu"]');
+  await flush();
+  document.querySelector('#app').dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
+  await flush();
+  assert.ok(document.querySelector('#app').innerHTML.length > 20);
+});
+

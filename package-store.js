@@ -40,8 +40,7 @@ export async function putPackage(packageRecord, indexedDb = globalThis.indexedDB
 }
 
 export async function getPackage(id, indexedDb = globalThis.indexedDB) {
-  let result;
-  await transact('readonly', (store) => { result = requestValue(store.get(id)); }, indexedDb);
+  const result = await transact('readonly', (store) => requestValue(store.get(id)), indexedDb);
   return result ?? null;
 }
 

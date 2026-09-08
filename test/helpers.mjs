@@ -234,6 +234,14 @@ export function installDom(html, { url = 'https://chatgpt.com/' } = {}) {
   assign('MouseEvent', window.MouseEvent);
   assign('KeyboardEvent', window.KeyboardEvent);
   assign('InputEvent', window.InputEvent);
+  if (typeof window.ClipboardEvent !== 'function') {
+    window.ClipboardEvent = class ClipboardEvent extends window.Event {
+      constructor(type, init = {}) {
+        super(type, init);
+        this.clipboardData = init.clipboardData ?? null;
+      }
+    };
+  }
   assign('ClipboardEvent', window.ClipboardEvent);
   assign('CustomEvent', window.CustomEvent);
   assign('FocusEvent', window.FocusEvent);
@@ -278,7 +286,21 @@ export function installDom(html, { url = 'https://chatgpt.com/' } = {}) {
     };
   }
   assign('DataTransfer', window.DataTransfer);
+  assign('Range', window.Range);
+  assign('Selection', window.Selection);
   window.document.execCommand ??= () => false;
+  window.document.hasFocus = () => true;
+  assign('hasFocus', window.document.hasFocus);
+  assign('HTMLAnchorElement', window.HTMLAnchorElement);
+  const originalElementClick = window.HTMLElement.prototype.click;
+  window.HTMLElement.prototype.click = function click() {
+    if (this.tagName === 'A' && (this.download || this.hasAttribute('download'))) return;
+    return originalElementClick.call(this);
+  };
+  window.document.addEventListener('click', (event) => {
+    const anchor = event.target?.closest?.('a');
+    if (anchor && (anchor.download || anchor.hasAttribute('download'))) event.preventDefault();
+  }, true);
   return { dom, window, document: window.document, clipboard: () => clipboard };
 }
 

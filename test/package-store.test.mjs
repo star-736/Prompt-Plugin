@@ -23,7 +23,7 @@ test('IndexedDB package helpers put, get, export, import, and delete', async () 
   const record = { id: 'pkg-1', files: [{ path: 'SKILL.md', content: 'abc', size: 3 }], fileCount: 1, totalSize: 3 };
   await putPackage(record, indexedDb);
   assert.equal((await getPackage('pkg-1', indexedDb)).files[0].path, 'SKILL.md');
-  assert.equal(await getPackage('missing', indexedDb), undefined);
+  assert.equal(await getPackage('missing', indexedDb), null);
   const exported = await exportPackages(['pkg-1', 'pkg-1', ''], indexedDb);
   assert.equal(exported.length, 1);
   const imported = await importPackages(exported, [{ sourcePackageId: 'pkg-1', targetPackageId: 'pkg-2' }], indexedDb);

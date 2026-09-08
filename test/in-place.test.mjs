@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { normalizeSiteOrigin, sitePattern, siteHost, originOfUrl, shouldTrigger, slashCompletesTrigger, inlineAnchorQuery, INLINE_DISMISS_MS, SHORTCUT_LABEL, SITE_PRESETS, isPromptableSite, relatedMatchPatterns, originCoveredBySites, inPlaceAllowsOrigin, livePaletteUpdate, paletteTypesForUrl, patternsForSites, presetFor } from '../in-place.js';
+import { normalizeSiteOrigin, sitePattern, siteHost, originOfUrl, shouldTrigger, slashCompletesTrigger, inlineAnchorQuery, INLINE_DISMISS_MS, SHORTCUT_LABEL, SITE_PRESETS, isPromptableSite, isRestrictedTabUrl, relatedMatchPatterns, originCoveredBySites, inPlaceAllowsOrigin, livePaletteUpdate, paletteTypesForUrl, patternsForSites, presetFor } from '../in-place.js';
 import { createEmptyDatabase, disableSite, enableSite, updateInPlaceSettings } from '../store.js';
 
 test('normalizeSiteOrigin accepts bare host and full https URL', () => {
@@ -153,4 +153,15 @@ test('relatedMatchPatterns and patternsForSites cover Gemini, ChatGPT, and custo
   assert.equal(originCoveredBySites('', ['https://chatgpt.com']), false);
   assert.deepEqual(paletteTypesForUrl('not-a-url'), ['generic', 'skill']);
   assert.deepEqual(paletteTypesForUrl('http://grok.com/imagine'), ['generic', 'skill']);
+});
+
+test('isRestrictedTabUrl treats browser pages as restricted', () => {
+  assert.equal(isRestrictedTabUrl(''), true);
+  assert.equal(isRestrictedTabUrl(null), true);
+  assert.equal(isRestrictedTabUrl('chrome://extensions'), true);
+  assert.equal(isRestrictedTabUrl('edge://settings'), true);
+  assert.equal(isRestrictedTabUrl('about:blank'), true);
+  assert.equal(isRestrictedTabUrl('chrome-extension://abc/popup.html'), true);
+  assert.equal(isRestrictedTabUrl('devtools://devtools'), true);
+  assert.equal(isRestrictedTabUrl('https://chatgpt.com/'), false);
 });
