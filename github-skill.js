@@ -22,10 +22,24 @@ async function json(fetchImpl, url) {
   try {
     response = await fetchImpl(url, { headers: { Accept: 'application/vnd.github+json' } });
   } catch {
-    throw new Error('无法读取该仓库（可能是私有仓库或网络错误）。');
+    throw new Error('无法连接 GitHub API，请检查网络或代理后重试。');
   }
   if (!response.ok) {
-    if ([401, 403, 404].includes(response.status)) throw new Error('无法读取该仓库（可能是私有仓库或网络错误）。');
+    const header = (name) => response.headers?.get?.(name);
+    let body = {};
+    try { body = await response.json(); } catch { /* Some proxy errors are not JSON. */ }
+    if ([403, 429].includes(response.status) && (response.status === 429 || header('x-ratelimit-remaining') === '0' || header('retry-after') || /rate limit/i.test(body?.message ?? ''))) {
+      const retry = header('retry-after');
+      const reset = header('x-ratelimit-reset');
+      const at = retry ? (/^\d+$/.test(retry) ? Date.now() + Number(retry) * 1000 : Date.parse(retry)) : reset ? Number(reset) * 1000 : NaN;
+      const wait = Number.isFinite(at) && at > Date.now() && at <= 8640000000000000
+        ? `请在 ${new Date(at).toLocaleString()} 后重试。` : '请稍后重试，不要连续点击收集。';
+      const secondary = /secondary/i.test(body?.message ?? '') || (header('x-ratelimit-remaining') !== '0' && Boolean(retry));
+      throw new Error(`GitHub ${secondary ? '临时限流' : 'API 请求额度已用完'}。${wait}可在设置中配置或检查 GitHub Token。`);
+    }
+    if (response.status === 401) throw new Error('GitHub Token 无效或已过期，请在设置中更新或移除。');
+    if (response.status === 403) throw new Error('GitHub 拒绝访问（403），请检查 Token 权限或组织访问限制。');
+    if (response.status === 404) throw new Error('GitHub 资源不存在或无权访问（404），请检查仓库、分支或 Token 权限。');
     throw new Error(`GitHub 请求失败（${response.status}）。`);
   }
   return response.json();

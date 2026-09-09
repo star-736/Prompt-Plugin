@@ -102,6 +102,7 @@ export function createMemoryIndexedDB() {
 
 function storageArea(bucket) {
   return {
+    async setAccessLevel() {},
     async get(keys) {
       if (keys == null) return { ...bucket };
       if (typeof keys === 'string') return { [keys]: bucket[keys] };

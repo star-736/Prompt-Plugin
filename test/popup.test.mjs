@@ -102,6 +102,31 @@ function toastText() {
   return document.querySelector('#toast')?.textContent || '';
 }
 
+test('GitHub Token can be saved, replaced and removed without rendering its value', async () => {
+  click('[data-action="settings"]');
+  for (const token of ['ghp_example', 'github_pat_replacement']) {
+    document.querySelector('#github-token').value = token;
+    document.querySelector('#github-token-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+    await waitFor(() => stub.local['futurecontext.github-token'] === token);
+    await waitFor(() => document.querySelector('#github-token').value === '');
+    assert.equal(document.querySelector('#app').innerHTML.includes(token), false);
+    assert.match(document.querySelector('#app').textContent, /已配置/);
+  }
+  click('[data-action="remove-github-token"]');
+  await waitFor(() => !stub.local['futurecontext.github-token']);
+  await waitFor(() => /未配置/.test(document.querySelector('#app').textContent));
+  assert.equal(JSON.stringify(createBackup(stub.local['futurecontext.v1'])).includes('github_pat_replacement'), false);
+});
+
+test('invalid GitHub Token reports a validation error without saving', async () => {
+  click('[data-action="settings"]');
+  document.querySelector('#github-token').value = 'Bearer example';
+  document.querySelector('#github-token-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  await waitFor(() => /格式不正确/.test(document.querySelector('#github-token-status').textContent));
+  assert.equal(stub.local['futurecontext.github-token'], undefined);
+  assert.equal(document.querySelector('#github-token').value, '');
+});
+
 
 test('library renders notice, tabs, and asset actions', async () => {
   assert.match(document.querySelector('#app').innerHTML, /周报/);
