@@ -219,16 +219,31 @@ test('unlock-ai and process-ai-now run grouping when thresholds are low', async 
   await handleRuntimeMessage({ type: 'queue-existing' });
   await handleRuntimeMessage({ type: 'process-ai-now' });
   const paused = structuredClone(stub.local['futurecontext.v1']);
+  assert.deepEqual(paused.ai.queue, []);
+  assert.equal(paused.ai.status.state, 'idle');
+  const grouped = paused.assets.filter((asset) => ['g1', 'g2'].includes(asset.id));
+  assert.equal(grouped.length, 2);
+  assert.ok(grouped[0].categoryId);
+  assert.equal(grouped[0].categoryId, grouped[1].categoryId);
+  assert.ok(paused.ai.proposals.some((proposal) => proposal.summary === '合并'));
   paused.ai.queue = [{ id: 'q1', assetId: 'g1', assetType: 'generic', queuedAt: 1 }];
   paused.ai.enabled = true;
   seedDatabase(stub.local, paused);
   globalThis.fetch = async () => ({ ok: false, status: 500, json: async () => ({}) });
   await handleRuntimeMessage({ type: 'process-ai-now' });
+  const failedDatabase = stub.local['futurecontext.v1'];
+  assert.equal(failedDatabase.ai.status.state, 'paused');
+  assert.deepEqual(failedDatabase.ai.queue, paused.ai.queue);
+  assert.deepEqual(failedDatabase.assets, paused.assets);
 });
 
 test('runtime onMessage wrapper, permission retry, and palette broadcast fallback', async () => {
   seedDatabase(stub.local, enableSites(createEmptyDatabase(), ['https://chatgpt.com']));
   const originalContains = stub.chrome.permissions.contains.bind(stub.chrome.permissions);
+  stub.tabs[0].url = 'https://chatgpt.com/c/1';
+  const broadcasts = [];
+  const originalSend = stub.chrome.tabs.sendMessage;
+  stub.chrome.tabs.sendMessage = async (tabId, message) => { broadcasts.push({ tabId, message }); return { ok: true }; };
   let containsCalls = 0;
   stub.chrome.permissions.contains = async (query) => {
     containsCalls += 1;
@@ -238,11 +253,14 @@ test('runtime onMessage wrapper, permission retry, and palette broadcast fallbac
   const originalExecute = stub.chrome.scripting.executeScript;
   stub.chrome.scripting.executeScript = async () => { throw new Error('no receiver'); };
   await handleRuntimeMessage({ type: 'sync-sites' });
+  assert.ok(containsCalls >= 2, 'permission lookup must retry after the transient failure');
+  assert.ok(broadcasts.some(({ tabId, message }) => tabId === 1 && message.type === 'fc-settings' && message.enabled === true));
+  stub.chrome.tabs.sendMessage = originalSend;
   stub.chrome.scripting.executeScript = originalExecute;
   stub.chrome.permissions.contains = originalContains;
   const wrapped = stub.listeners.message[0];
   const ok = await new Promise((resolve) => wrapped({ type: 'read-notice' }, {}, resolve));
-  assert.equal('ok' in ok, true);
+  assert.equal(ok.ok, true);
   const failed = await new Promise((resolve) => wrapped({ type: 'nope' }, {}, resolve));
   assert.equal(failed.ok, false);
   stub.tabs[0].url = 'https://www.douyin.com/';

@@ -1,10 +1,25 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { SourceTextModule, SyntheticModule } from 'node:vm';
 import { JSDOM } from 'jsdom';
 import { APP_STORAGE_KEY, createEmptyDatabase, normalizeDatabase } from '../store.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+
+// Fresh entry-point state with a stable source URL so V8 merges coverage from
+// different fixtures rather than counting query-string imports as extra files.
+export async function loadFreshEntry(relativePath) {
+  const url = new URL(relativePath, import.meta.url);
+  const entry = new SourceTextModule(readFileSync(url, 'utf8'), { identifier: url.href });
+  await entry.link(async (specifier) => {
+    const namespace = await import(new URL(specifier, url).href);
+    return new SyntheticModule(Object.keys(namespace), function () {
+      for (const name of Object.keys(namespace)) this.setExport(name, namespace[name]);
+    });
+  });
+  await entry.evaluate();
+}
 
 export function createMemoryIndexedDB() {
   const databases = new Map();
@@ -218,7 +233,7 @@ export function installDom(html, { url = 'https://chatgpt.com/' } = {}) {
   const dom = new JSDOM(html, { url, pretendToBeVisual: true, runScripts: 'outside-only' });
   const { window } = dom;
   const assign = (key, value) => {
-    try { globalThis[key] = value; } catch { /* 只读全局量跳过。 */ }
+    Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
   };
   assign('window', window);
   assign('document', window.document);

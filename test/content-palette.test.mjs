@@ -1,15 +1,17 @@
 import assert from 'node:assert/strict';
-import test, { before } from 'node:test';
-import { createChromeStub, flush, installDom, waitFor } from './helpers.mjs';
+import test, { beforeEach, afterEach } from 'node:test';
+import { createChromeStub, flush, installDom, loadFreshEntry, waitFor } from './helpers.mjs';
 
-const { window, document } = installDom(`<!doctype html><html><body></body></html>`, { url: 'https://chatgpt.com/c/1' });
+let window, document, stub, clipboard;
 
 const assets = [
   { id: 'g1', type: 'generic', typeLabel: '通用', title: '周报', preview: '总结本周', pinned: true },
   { id: 's1', type: 'skill', typeLabel: 'Skill', title: 'Email reviewer', preview: 'Review email', pinned: false }
 ];
 
-const stub = createChromeStub({
+beforeEach(async () => {
+({ window, document, clipboard } = installDom(`<!doctype html><html><body></body></html>`, { url: 'https://chatgpt.com/c/1' }));
+stub = createChromeStub({
   sendMessage: async (message) => {
     if (message.type === 'palette-settings') return { ok: true, result: { enabled: true, triggerEnabled: true } };
     if (message.type === 'palette-query') return { ok: true, result: assets.filter((item) => !message.query || item.title.includes(message.query) || item.preview.includes(message.query)) };
@@ -18,7 +20,10 @@ const stub = createChromeStub({
   }
 });
 
-await import('../content-palette.js');
+await loadFreshEntry('../content-palette.js');
+await waitFor(() => window.__futureContextPalette?.openFromShortcut);
+});
+afterEach(() => { window.__futureContextPalette?.destroy(); window.close(); });
 
 function field() {
   let el = document.querySelector('textarea');
@@ -30,9 +35,6 @@ function field() {
   return el;
 }
 
-before(async () => {
-  await waitFor(() => window.__futureContextPalette?.openFromShortcut);
-});
 
 test('palette arms and opens from shortcut on a focused textarea', async () => {
   const el = field();
@@ -56,7 +58,7 @@ test('// trigger opens the inline palette and insert writes into the field', asy
   assert.ok(panel);
   panel.querySelector('.fc-item').dispatchEvent(new window.MouseEvent('mousedown', { bubbles: true, cancelable: true }));
   await flush(80);
-  assert.equal(el.value.includes('写一封邮件') || el.value.includes('skill') || el.value.length >= 0, true);
+  assert.equal(el.value, '写一封邮件');
 });
 
 test('keyboard navigation, escape, and settings/destroy messages', async () => {
@@ -94,9 +96,9 @@ test('Enter inserts, slash intercept, beforeinput, and trigger-off', async () =>
   el.setSelectionRange(5, 5);
   el.focus();
   assert.equal(window.__futureContextPalette.openFromShortcut(), true);
-  await waitFor(() => paletteShadow()?.querySelector('.fc-item, .fc-empty, .fc-search'));
+  await waitFor(() => paletteShadow()?.querySelectorAll('.fc-item').length === 2);
   window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
-  await flush(80);
+  await waitFor(() => el.value === 'hello写一封邮件');
   el.value = '/';
   el.setSelectionRange(1, 1);
   el.dispatchEvent(new window.KeyboardEvent('keydown', { key: '/', bubbles: true, cancelable: true }));
@@ -108,10 +110,11 @@ test('Enter inserts, slash intercept, beforeinput, and trigger-off', async () =>
   el.setSelectionRange(2, 2);
   el.dispatchEvent(new window.Event('input', { bubbles: true }));
   await flush(30);
+  assert.equal(paletteShadow()?.querySelector('.fc-palette')?.hidden ?? true, true);
   rearm(true);
 });
 
-test('contenteditable shortcut, search filter, and background retry', async () => {
+test('contenteditable search retries and failed insertion falls back to clipboard', async () => {
   rearm(true);
   let failures = 1;
   const originalSend = stub.chrome.runtime.sendMessage.bind(stub.chrome.runtime);
@@ -134,15 +137,21 @@ test('contenteditable shortcut, search filter, and background retry', async () =
   selection.removeAllRanges();
   selection.addRange(range);
   assert.equal(window.__futureContextPalette.openFromShortcut(), true);
-  await waitFor(() => paletteShadow()?.querySelector('.fc-search, .fc-item, .fc-empty'));
+  await waitFor(() => paletteShadow()?.querySelectorAll('.fc-item').length === 2);
   const search = paletteShadow()?.querySelector('.fc-search');
-  if (search) {
+  assert.ok(search);
+  {
     search.value = '周报';
     search.dispatchEvent(new window.Event('input', { bubbles: true }));
     await flush(40);
+    assert.equal(paletteShadow().querySelectorAll('.fc-item').length, 1);
+    assert.match(paletteShadow().querySelector('.fc-item').textContent, /周报/);
   }
   window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
   await flush(80);
+  assert.equal(failures, 0);
+  assert.equal(clipboard(), '写一封邮件');
+  assert.equal(ed.textContent, 'draft text');
   stub.chrome.runtime.sendMessage = originalSend;
 });
 
@@ -159,43 +168,25 @@ test('inline // dismisses after the trigger is deleted', async () => {
   el.dispatchEvent(new window.Event('input', { bubbles: true }));
   document.dispatchEvent(new window.Event('selectionchange'));
   await flush(120);
+  assert.equal(paletteShadow().querySelector('.fc-palette').hidden, true);
   stub.listeners.message.forEach((listener) => listener({ type: 'fc-destroy' }));
 });
 
-test('completing slash, failed background query, and contenteditable inline insert', async () => {
+test('failed background query retries twice and leaves the input unchanged', async () => {
   rearm(true);
   const el = field();
-  el.value = '/';
-  el.setSelectionRange(1, 1);
-  el.focus();
-  el.dispatchEvent(new window.KeyboardEvent('keydown', { key: '/', bubbles: true, cancelable: true }));
-  el.dispatchEvent(new window.InputEvent('beforeinput', { bubbles: true, cancelable: true, data: '/', inputType: 'insertText' }));
-  await flush(20);
-  const originalSend = stub.chrome.runtime.sendMessage.bind(stub.chrome.runtime);
-  stub.chrome.runtime.sendMessage = async () => { throw new Error('no background'); };
-  el.value = '//';
-  el.setSelectionRange(2, 2);
-  el.dispatchEvent(new window.Event('input', { bubbles: true }));
-  await flush(200);
-  stub.chrome.runtime.sendMessage = originalSend;
-  const ed = document.createElement('div');
-  ed.setAttribute('contenteditable', 'plaintext-only');
-  ed.textContent = '//';
-  document.body.appendChild(ed);
-  const range = document.createRange();
-  range.selectNodeContents(ed);
-  range.collapse(false);
-  const selection = window.getSelection();
-  selection.removeAllRanges();
-  selection.addRange(range);
-  ed.focus();
-  ed.dispatchEvent(new window.Event('input', { bubbles: true }));
-  await flush(80);
-  const panel = paletteShadow();
-  const item = panel?.querySelector('.fc-item');
-  if (item) {
-    item.dispatchEvent(new window.MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-    await flush(80);
-  }
-  stub.listeners.message.forEach((listener) => listener({ type: 'fc-destroy' }));
+  el.value = 'draft';
+  el.setSelectionRange(5, 5);
+  let attempts = 0;
+  stub.chrome.runtime.sendMessage = async (message) => {
+    assert.equal(message.type, 'palette-query');
+    attempts += 1;
+    throw new Error('no background');
+  };
+  assert.equal(window.__futureContextPalette.openFromShortcut(), true);
+  await waitFor(() => attempts === 2);
+  await flush(30);
+  assert.equal(el.value, 'draft');
+  assert.equal(clipboard(), '');
+  assert.equal(paletteShadow().querySelectorAll('.fc-item').length, 0);
 });

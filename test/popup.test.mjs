@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import test, { before } from 'node:test';
+import test, { beforeEach, afterEach } from 'node:test';
 import { webcrypto } from 'node:crypto';
 import {
   createBackup,
@@ -11,7 +11,7 @@ import {
   updateAiSettings,
   updateInPlaceSettings
 } from '../store.js';
-import { click, confirmOpenDialog, createChromeStub, createMemoryIndexedDB, flush, installDom, popupHtml, seedDatabase, waitFor } from './helpers.mjs';
+import { click, confirmOpenDialog, createChromeStub, createMemoryIndexedDB, flush, installDom, loadFreshEntry, popupHtml, seedDatabase, waitFor } from './helpers.mjs';
 
 const skill = `---\nname: Email reviewer\ndescription: Review email drafts\n---\n\n# Instructions\nReview the email.`;
 
@@ -22,13 +22,17 @@ function withSites(database, sites) {
   return next;
 }
 
-const { window, document } = installDom(popupHtml(), { url: 'https://chatgpt.com/c/1' });
-const indexedDb = createMemoryIndexedDB();
-const stub = createChromeStub({
+let window, document, indexedDb, stub, messages;
+beforeEach(async (t) => {
+({ window, document } = installDom(popupHtml(), { url: 'https://github.com/acme/demo/blob/main/skills/demo/SKILL.md' }));
+indexedDb = createMemoryIndexedDB();
+messages = [];
+stub = createChromeStub({
   grantedOrigins: ['https://chatgpt.com/*', 'https://*.chatgpt.com/*', 'https://chat.openai.com/*', 'https://github.com/*', 'https://api.github.com/*', 'https://api.openai.com/*'],
   tabs: [{ id: 7, url: 'https://chatgpt.com/c/1', active: true, windowId: 1 }],
   indexedDB: indexedDb,
   sendMessage: async (message) => {
+    messages.push(message);
     if (message.type === 'read-notice') return { ok: true, result: { message: '刚才保存成功' } };
     if (message.type === 'sync-sites') return { ok: true, result: { sites: 1 } };
     if (message.type === 'schedule-ai') return { ok: true, result: { ok: true } };
@@ -38,7 +42,10 @@ const stub = createChromeStub({
     if (message.type === 'test-provider') return { ok: true, result: { ok: true } };
     if (message.type === 'queue-existing') return { ok: true, result: { count: 2 } };
     if (message.type === 'save-provider') return { ok: true, result: { id: 'p1', label: message.provider.label } };
-    if (message.type === 'delete-provider') return { ok: true, result: { ok: true } };
+    if (message.type === 'delete-provider') {
+      stub.local['futurecontext.v1'].ai.providers = stub.local['futurecontext.v1'].ai.providers.filter((p) => p.id !== message.id);
+      return { ok: true, result: { ok: true } };
+    }
     if (message.type === 'collect-github-skill') return { ok: true, result: { duplicate: false, asset: { id: 'skill-1', title: 'Email reviewer' } } };
     if (message.type === 'update-github-skill') return { ok: true, result: { changed: false } };
     return { ok: false, error: `unhandled ${message.type}` };
@@ -67,6 +74,10 @@ database = updateAiSettings(database, {
   proposals: database.ai.proposals
 });
 database = withSites(database, []);
+if (t.name.includes('read-only')) database.version = 999;
+if (t.name.includes('activating another provider')) {
+  database.ai.providers.push({ ...database.ai.providers[0], id: 'p2', label: 'Second provider' });
+}
 seedDatabase(stub.local, database);
 
 await import('../package-store.js').then(({ putPackage }) => putPackage({
@@ -76,7 +87,10 @@ await import('../package-store.js').then(({ putPackage }) => putPackage({
   totalSize: 20
 }, indexedDb));
 
-await import('../popup.js');
+await loadFreshEntry('../popup.js');
+await waitFor(() => document.querySelector('.tabs'));
+});
+afterEach(() => window.close());
 
 function addProposal(db) {
   const next = structuredClone(db);
@@ -88,9 +102,6 @@ function toastText() {
   return document.querySelector('#toast')?.textContent || '';
 }
 
-before(async () => {
-  await waitFor(() => document.querySelector('.tabs'));
-});
 
 test('library renders notice, tabs, and asset actions', async () => {
   assert.match(document.querySelector('#app').innerHTML, /周报/);
@@ -229,19 +240,20 @@ test('privacy lock reset, export confirm, and collect GitHub', async () => {
   await waitFor(() => document.querySelector('[data-action="collect-github-skill"]'));
   stub.tabs[0].url = 'https://github.com/acme/demo/blob/main/skills/demo/SKILL.md';
   click('[data-action="collect-github-skill"]');
-  await waitFor(() => /GitHub Skill/.test(toastText()) || /已是当前/.test(toastText()) || /失败/.test(toastText()) || /SKILL\.md/.test(toastText()));
+  await waitFor(() => messages.some((m) => m.type === 'collect-github-skill'));
+  await waitFor(() => /GitHub Skill/.test(toastText()));
+  assert.doesNotMatch(toastText(), /失败/);
 });
 
-test('private gate setup after lock reset still renders', async () => {
+test('locked private library requires the password form', async () => {
   click('[data-tab="aigc"]');
   await waitFor(() => document.querySelector('[data-privacy="private"]'));
   click('[data-privacy="private"]');
-  await waitFor(() => document.querySelector('#private-gate-form') || document.querySelector('.asset-list') || document.querySelector('.empty-state'));
-  assert.ok(document.querySelector('#app').innerHTML.length > 20);
+  await waitFor(() => document.querySelector('#private-gate-form'));
+  assert.equal(document.querySelector('.asset-list'), null);
 });
 
 test('categories, open generic asset, discard editor, and import backup', async () => {
-  click('[data-privacy="normal"]');
   await waitFor(() => document.querySelector('[data-tab="generic"]'));
   click('[data-tab="generic"]');
   await waitFor(() => document.querySelector('#search'));
@@ -256,10 +268,10 @@ test('categories, open generic asset, discard editor, and import backup', async 
   await waitFor(() => document.querySelector('#category-rename-form'));
   document.querySelector('#category-rename-form').elements.name.value = '归档夹';
   document.querySelector('#category-rename-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
-  await waitFor(() => /分类已重命名/.test(toastText()) || document.querySelector('[data-action="delete-category"]'));
+  await waitFor(() => /分类已重命名/.test(toastText()));
   click('[data-action="delete-category"]');
   confirmOpenDialog();
-  await waitFor(() => /分类已删除/.test(toastText()) || document.querySelector('#category-create-form'));
+  await waitFor(() => /分类已删除/.test(toastText()));
   click('[data-action="library"]');
   await waitFor(() => document.querySelector('[data-action="open-asset"]'));
   click('[data-action="open-asset"]');
@@ -272,106 +284,112 @@ test('categories, open generic asset, discard editor, and import backup', async 
   await waitFor(() => document.querySelector('.asset-list') || document.querySelector('[data-action="new-asset"]'));
   click('[data-action="settings"]');
   await waitFor(() => document.querySelector('[data-action="import-backup"]'));
-  const backup = createBackup(createEmptyDatabase(), 9);
+  const importedDatabase = saveAsset(createEmptyDatabase(), { type: 'generic', title: 'Imported prompt', content: 'unique imported content' }, { id: 'imported' }).database;
+  const backup = createBackup(importedDatabase, 9);
   const file = new window.File([JSON.stringify(backup)], 'backup.json', { type: 'application/json' });
   const input = document.querySelector('#backup-input');
   Object.defineProperty(input, 'files', { configurable: true, value: [file] });
   input.dispatchEvent(new window.Event('change', { bubbles: true }));
-  await waitFor(() => /导入/.test(toastText()) || /失败/.test(toastText()));
+  await waitFor(() => /已导入 1 项/.test(toastText()));
+  assert.equal(stub.local['futurecontext.v1'].assets.filter((asset) => asset.content === 'unique imported content').length, 1);
 });
 
-test('providers, unlock, organize, activate, delete, and proposals', async () => {
+test('provider unlock, organize, delete, and apply proposal persist their results', async () => {
   click('[data-action="settings"]');
   await waitFor(() => document.querySelector('[data-action="manage-providers"]'));
   click('[data-action="manage-providers"]');
   await waitFor(() => document.querySelector('[data-action="test-provider"], [data-action="new-provider"]'));
   const testBtn = document.querySelector('[data-action="test-provider"]');
-  if (testBtn) {
+  assert.ok(testBtn);
+  {
     click(testBtn);
     await waitFor(() => document.querySelector('#ai-unlock-form') || /测试/.test(toastText()) || /连接/.test(toastText()));
     const unlock = document.querySelector('#ai-unlock-form');
-    if (unlock) {
-      document.querySelector('#ai-unlock-password').value = 'abcdef';
+    assert.ok(unlock);
+    {
+      document.querySelector('#ai-unlock-password').value = '123456';
       unlock.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
       await flush(40);
+      assert.ok(messages.some((m) => m.type === 'unlock-ai' && m.password === '123456'));
+      assert.ok(messages.some((m) => m.type === 'test-provider' && m.id === 'p1'));
+      assert.equal(toastText(), '连接测试成功');
     }
-  }
-  const activate = document.querySelector('[data-action="activate-provider"]');
-  if (activate) {
-    click(activate);
-    await flush(20);
   }
   click('[data-action="settings"]');
   await waitFor(() => document.querySelector('[data-action="organize-existing"]'));
   click('[data-action="organize-existing"]');
-  await flush(40);
+  await waitFor(() => document.querySelector('#ai-unlock-form'));
+  document.querySelector('#ai-unlock-password').value = '123456';
+  document.querySelector('#ai-unlock-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  await waitFor(() => toastText() === '已加入 2 项后台整理');
+  assert.ok(messages.some((m) => m.type === 'queue-existing'));
   click('[data-action="view-proposals"]');
   await waitFor(() => document.querySelector('[data-action="apply-proposal"], .empty-state, .proposal-list'));
   const apply = document.querySelector('[data-action="apply-proposal"]');
-  if (apply) {
+  assert.ok(apply);
+  {
     click(apply);
     await flush(20);
-  }
-  const dismiss = document.querySelector('[data-action="dismiss-proposal"]');
-  if (dismiss) {
-    click(dismiss);
-    await flush(20);
+    assert.equal(stub.local['futurecontext.v1'].ai.proposals.find((p) => p.id === 'prop-1').status, 'applied');
   }
   click('[data-action="settings"]');
   await waitFor(() => document.querySelector('[data-action="manage-providers"]'));
   click('[data-action="manage-providers"]');
   await waitFor(() => document.querySelector('[data-action="delete-provider"], [data-action="new-provider"]'));
   const del = document.querySelector('[data-action="delete-provider"]');
-  if (del) {
+  assert.ok(del);
+  {
     click(del);
     confirmOpenDialog();
     await flush(30);
+    assert.ok(messages.some((m) => m.type === 'delete-provider' && m.id === 'p1'));
+    assert.equal(document.querySelector('[data-action="delete-provider"]'), null);
   }
 });
 
-test('site hint, ignore, package category, aigc move, and click-away menu', async () => {
+test('site enable, package category, aigc move, and click-away menu', async () => {
   click('[data-action="home"]');
   await waitFor(() => document.querySelector('[data-tab="generic"], [data-tab="aigc"]'));
   const enableCurrent = document.querySelector('[data-action="enable-current-site"]');
-  if (enableCurrent) {
+  assert.ok(enableCurrent);
+  {
     click(enableCurrent);
     await flush(40);
-  }
-  const ignoreCurrent = document.querySelector('[data-action="ignore-current-site"]');
-  if (ignoreCurrent) {
-    click(ignoreCurrent);
-    await flush(20);
+    assert.ok(stub.local['futurecontext.v1'].settings.inPlace.sites.includes('https://chatgpt.com'));
   }
   click('[data-tab="aigc"]');
   await waitFor(() => document.querySelector('[data-privacy="normal"]'));
   click('[data-privacy="normal"]');
   await waitFor(() => document.querySelector('[data-action="open-asset"], .empty-state'));
   const aigcOpen = document.querySelector('[data-action="open-asset"]');
-  if (aigcOpen) {
+  assert.ok(aigcOpen);
+  {
     click(aigcOpen);
     await waitFor(() => document.querySelector('[data-action="move-asset"]') || document.querySelector('#editor-form'));
     const move = document.querySelector('[data-action="move-asset"]');
-    if (move) {
+    assert.ok(move);
+    {
       click(move);
       confirmOpenDialog();
       await flush(30);
-    } else {
-      click('[data-action="editor-back"]');
-      await flush(20);
+      assert.equal(stub.local['futurecontext.v1'].assets.find((a) => a.id === 'a1').privacy, 'private');
     }
   }
   click('[data-tab="skill"]');
   await waitFor(() => document.querySelector('[data-action="open-asset"], [data-action="collect-github-skill"]'));
-  const skillOpen = document.querySelector('[data-action="open-asset"]');
-  if (skillOpen) {
+  const skillOpen = document.querySelector('[data-action="open-asset"][data-id="skill-gh"]');
+  assert.ok(skillOpen);
+  {
     click(skillOpen);
     await waitFor(() => document.querySelector('#editor-form, [data-action="update-github-skill"]'));
-    if (document.querySelector('[data-action="new-category-from-editor"]')) {
+    assert.ok(document.querySelector('[data-action="new-category-from-editor"]'));
+    {
       click('[data-action="new-category-from-editor"]');
       await waitFor(() => document.querySelector('#editor-new-category'));
       document.querySelector('#editor-new-category').value = '邮件技能';
       click('[data-action="create-category-from-editor"]');
       await flush(30);
+      assert.ok(stub.local['futurecontext.v1'].assets.find((a) => a.id === 'skill-gh').categoryId);
     }
     click('[data-action="home"]');
     await flush(20);
@@ -382,6 +400,48 @@ test('site hint, ignore, package category, aigc move, and click-away menu', asyn
   await flush();
   document.querySelector('#app').dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
   await flush();
-  assert.ok(document.querySelector('#app').innerHTML.length > 20);
+  assert.equal(document.querySelector('[data-action="manage-categories"]').closest('.category-menu').hidden, true);
 });
 
+test('ignore current site persists the choice and removes the hint', async () => {
+  click('[data-action="ignore-current-site"]');
+  await waitFor(() => !document.querySelector('[data-action="ignore-current-site"]'));
+  assert.ok(stub.local['futurecontext.v1'].settings.inPlace.ignoredSites.includes('https://chatgpt.com'));
+});
+
+test('dismissing a proposal persists dismissed status', async () => {
+  click('[data-action="settings"]');
+  click('[data-action="view-proposals"]');
+  click('[data-action="dismiss-proposal"]');
+  await waitFor(() => toastText() === '已保留当前分类');
+  assert.equal(stub.local['futurecontext.v1'].ai.proposals.find((p) => p.id === 'prop-1').status, 'dismissed');
+});
+
+test('activating another provider persists its ID', async () => {
+  click('[data-action="settings"]');
+  click('[data-action="manage-providers"]');
+  click('[data-action="activate-provider"][data-id="p2"]');
+  await waitFor(() => toastText() === '已设为当前 Provider');
+  assert.equal(stub.local['futurecontext.v1'].ai.activeProviderId, 'p2');
+});
+
+test('read-only import refuses to overwrite the database', async () => {
+  const before = structuredClone(stub.local['futurecontext.v1']);
+  click('[data-action="settings"]');
+  const input = document.querySelector('#backup-input');
+  const backup = createBackup(saveAsset(createEmptyDatabase(), { type: 'generic', content: 'must not be saved' }).database);
+  Object.defineProperty(input, 'files', { configurable: true, value: [new window.File([JSON.stringify(backup)], 'backup.json')] });
+  input.dispatchEvent(new window.Event('change', { bubbles: true }));
+  await waitFor(() => /只读/.test(toastText()));
+  assert.deepEqual(stub.local['futurecontext.v1'], before);
+});
+
+test('invalid backup reports an error and preserves existing data', async () => {
+  const before = structuredClone(stub.local['futurecontext.v1']);
+  click('[data-action="settings"]');
+  const input = document.querySelector('#backup-input');
+  Object.defineProperty(input, 'files', { configurable: true, value: [new window.File(['{}'], 'invalid.json')] });
+  input.dispatchEvent(new window.Event('change', { bubbles: true }));
+  await waitFor(() => toastText() === '这不是 FutureContext 的有效备份文件。');
+  assert.deepEqual(stub.local['futurecontext.v1'], before);
+});
