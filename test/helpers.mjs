@@ -1,10 +1,25 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { SourceTextModule, SyntheticModule } from 'node:vm';
 import { JSDOM } from 'jsdom';
 import { APP_STORAGE_KEY, createEmptyDatabase, normalizeDatabase } from '../store.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+
+// Fresh entry-point state with a stable source URL so V8 merges coverage from
+// different fixtures rather than counting query-string imports as extra files.
+export async function loadFreshEntry(relativePath) {
+  const url = new URL(relativePath, import.meta.url);
+  const entry = new SourceTextModule(readFileSync(url, 'utf8'), { identifier: url.href });
+  await entry.link(async (specifier) => {
+    const namespace = await import(new URL(specifier, url).href);
+    return new SyntheticModule(Object.keys(namespace), function () {
+      for (const name of Object.keys(namespace)) this.setExport(name, namespace[name]);
+    });
+  });
+  await entry.evaluate();
+}
 
 export function createMemoryIndexedDB() {
   const databases = new Map();
@@ -218,7 +233,7 @@ export function installDom(html, { url = 'https://chatgpt.com/' } = {}) {
   const dom = new JSDOM(html, { url, pretendToBeVisual: true, runScripts: 'outside-only' });
   const { window } = dom;
   const assign = (key, value) => {
-    try { globalThis[key] = value; } catch { /* 只读全局量跳过。 */ }
+    Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
   };
   assign('window', window);
   assign('document', window.document);
@@ -234,6 +249,14 @@ export function installDom(html, { url = 'https://chatgpt.com/' } = {}) {
   assign('MouseEvent', window.MouseEvent);
   assign('KeyboardEvent', window.KeyboardEvent);
   assign('InputEvent', window.InputEvent);
+  if (typeof window.ClipboardEvent !== 'function') {
+    window.ClipboardEvent = class ClipboardEvent extends window.Event {
+      constructor(type, init = {}) {
+        super(type, init);
+        this.clipboardData = init.clipboardData ?? null;
+      }
+    };
+  }
   assign('ClipboardEvent', window.ClipboardEvent);
   assign('CustomEvent', window.CustomEvent);
   assign('FocusEvent', window.FocusEvent);
@@ -278,7 +301,21 @@ export function installDom(html, { url = 'https://chatgpt.com/' } = {}) {
     };
   }
   assign('DataTransfer', window.DataTransfer);
+  assign('Range', window.Range);
+  assign('Selection', window.Selection);
   window.document.execCommand ??= () => false;
+  window.document.hasFocus = () => true;
+  assign('hasFocus', window.document.hasFocus);
+  assign('HTMLAnchorElement', window.HTMLAnchorElement);
+  const originalElementClick = window.HTMLElement.prototype.click;
+  window.HTMLElement.prototype.click = function click() {
+    if (this.tagName === 'A' && (this.download || this.hasAttribute('download'))) return;
+    return originalElementClick.call(this);
+  };
+  window.document.addEventListener('click', (event) => {
+    const anchor = event.target?.closest?.('a');
+    if (anchor && (anchor.download || anchor.hasAttribute('download'))) event.preventDefault();
+  }, true);
   return { dom, window, document: window.document, clipboard: () => clipboard };
 }
 

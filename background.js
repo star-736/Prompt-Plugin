@@ -23,7 +23,7 @@ import {
 import { buildAssetOrganizationPrompt, buildGroupingPrompt, buildStructurePrompt, chatCompletion, parseAssetResult, parseGroups } from './ai-organizer.js';
 import { checkGitHubSkillUpdate, collectGitHubSkill, githubSkillUrlError, inspectGitHubSkillUrl, skillContextFromPage } from './github-skill.js';
 import { deletePackage, putPackage } from './package-store.js';
-import { inPlaceAllowsOrigin, livePaletteUpdate, originOfUrl, PALETTE_SCRIPT_FILE, PALETTE_SCRIPT_ID, paletteTypesForUrl, patternsForSites } from './in-place.js';
+import { inPlaceAllowsOrigin, isRestrictedTabUrl, livePaletteUpdate, originOfUrl, PALETTE_SCRIPT_FILE, PALETTE_SCRIPT_ID, paletteTypesForUrl, patternsForSites } from './in-place.js';
 
 const SESSION_KEY = 'futurecontext.ai-session';
 const AI_ALARM = 'futurecontext.ai-queue';
@@ -281,7 +281,7 @@ async function testProvider(id) {
   return { ok: true };
 }
 
-function githubPageContext() {
+export function githubPageContext() {
   const meta = (name) => document.querySelector(`meta[name="${name}"]`)?.getAttribute('content') ?? '';
   const attr = (selector, name) => document.querySelector(selector)?.getAttribute(name) ?? '';
   const repository = meta('octolytics-dimension-repository_nwo');
@@ -311,7 +311,7 @@ async function resolveCollectTab(message = {}) {
     try { return await chrome.tabs.get(message.tabId); } catch { return null; }
   }
   const [current] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (current?.id && current.url && !/^(chrome|edge|about|chrome-extension):/i.test(current.url)) return current;
+  if (current?.id && !isRestrictedTabUrl(current.url)) return current;
   const [focused] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   return focused ?? current ?? null;
 }

@@ -47,7 +47,7 @@ const stub = createChromeStub({
 
 seedDatabase(stub.local, enableSites(createEmptyDatabase(), ['https://chatgpt.com']));
 
-const { NOTICE_KEY, handleRuntimeMessage } = await import('../background.js');
+const { NOTICE_KEY, handleRuntimeMessage, githubPageContext } = await import('../background.js');
 
 test('unknown message type is rejected', async () => {
   await assert.rejects(() => handleRuntimeMessage({ type: 'nope' }), /未知/);
@@ -89,8 +89,8 @@ test('sync-sites registers and unregisters the palette content script', async ()
 
 test('provider save, unlock, test, queue, and delete', async () => {
   let database = await setPrivacyPassword(createEmptyDatabase(), '123456', webcrypto);
-  database = updateAiSettings(database, { enabled: true });
   database = saveAsset(database, { type: 'generic', content: '写周报' }, { id: 'g1' }).database;
+  database = updateAiSettings(database, { enabled: true });
   seedDatabase(stub.local, database);
   const provider = await handleRuntimeMessage({
     type: 'save-provider',
@@ -156,9 +156,115 @@ test('chrome listeners schedule AI, menus, and the palette shortcut', async () =
   stub.listeners.installed[0]();
   stub.listeners.startup[0]();
   stub.listeners.contextClicked[0]({ menuItemId: 'futurecontext-capture-selection', selectionText: 'captured text' }, { id: 1, url: 'https://chatgpt.com/' });
+  stub.listeners.contextClicked[0]({ menuItemId: 'futurecontext-capture-selection', selectionText: '   ' }, { id: 1, url: 'https://chatgpt.com/' });
   stub.listeners.contextClicked[0]({ menuItemId: 'other' }, { id: 1 });
   stub.listeners.command[0]('open-palette');
   stub.listeners.command[0]('other');
   await new Promise((resolve) => setTimeout(resolve, 150));
   assert.ok(stub.listeners.message.length >= 1);
+});
+
+test('githubPageContext parses refs/heads paths and permalink commit', () => {
+  const previousDocument = globalThis.document;
+  const previousLocation = globalThis.location;
+  globalThis.document = {
+    querySelector(selector) {
+      if (selector === 'a[data-hotkey="y"]') return { getAttribute: () => '/acme/demo/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/skills/demo/SKILL.md' };
+      return { getAttribute: () => '' };
+    }
+  };
+  globalThis.location = { href: 'https://github.com/acme/demo/blob/refs/heads/main/skills/demo/SKILL.md', pathname: '/acme/demo/blob/refs/heads/main/skills/demo/SKILL.md' };
+  try {
+    const ctx = githubPageContext();
+    assert.equal(ctx.repository, 'acme/demo');
+    assert.equal(ctx.ref, 'main');
+    assert.equal(ctx.path, 'skills/demo/SKILL.md');
+    assert.equal(ctx.commit, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+  } finally {
+    globalThis.document = previousDocument;
+    globalThis.location = previousLocation;
+  }
+});
+
+test('collect and update reject invalid pages and non-github skills', async () => {
+  seedDatabase(stub.local, createEmptyDatabase());
+  await assert.rejects(() => handleRuntimeMessage({ type: 'collect-github-skill', url: 'https://chatgpt.com/', tabId: 1 }), /公开 GitHub|SKILL\.md/);
+  await assert.rejects(() => handleRuntimeMessage({ type: 'collect-github-skill', url: 'https://github.com/acme/demo/blob/main/skills/demo/SKILL.md', tabId: 99 }), /仓库信息|读取/);
+  await assert.rejects(() => handleRuntimeMessage({ type: 'update-github-skill', assetId: 'missing' }), /可更新/);
+  const collectedUrl = 'https://github.com/acme/demo/blob/main/skills/demo/SKILL.md';
+  stub.tabs[0].url = collectedUrl;
+  globalThis.fetch = skillFetch();
+  await handleRuntimeMessage({ type: 'collect-github-skill', url: collectedUrl });
+});
+
+test('unlock-ai and process-ai-now run grouping when thresholds are low', async () => {
+  let database = await setPrivacyPassword(createEmptyDatabase(), '123456', webcrypto);
+  database = updateAiSettings(database, { enabled: true, thresholds: { uncategorized: 1, restructureChanges: 1, restructureDays: 0 } });
+  database = saveAsset(database, { type: 'generic', content: '写周报' }, { id: 'g1' }).database;
+  database = saveAsset(database, { type: 'generic', content: '写邮件' }, { id: 'g2' }).database;
+  seedDatabase(stub.local, database);
+  const provider = await handleRuntimeMessage({
+    type: 'save-provider',
+    password: '123456',
+    provider: { kind: 'openai', label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4.1-mini', apiKey: 'sk-test' }
+  });
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ choices: [{ message: { content: JSON.stringify({ title: '周报', categoryName: null, groups: [{ name: '工作', assetIds: ['g1', 'g2'] }], proposal: { summary: '合并', groups: [{ from: ['工作'], to: '沟通' }] } }) } }] })
+  });
+  await handleRuntimeMessage({ type: 'clear-ai-session' });
+  const unlocked = await handleRuntimeMessage({ type: 'unlock-ai', password: '123456' });
+  assert.equal(unlocked.providerId, provider.id);
+  await handleRuntimeMessage({ type: 'queue-existing' });
+  await handleRuntimeMessage({ type: 'process-ai-now' });
+  const paused = structuredClone(stub.local['futurecontext.v1']);
+  assert.deepEqual(paused.ai.queue, []);
+  assert.equal(paused.ai.status.state, 'idle');
+  const grouped = paused.assets.filter((asset) => ['g1', 'g2'].includes(asset.id));
+  assert.equal(grouped.length, 2);
+  assert.ok(grouped[0].categoryId);
+  assert.equal(grouped[0].categoryId, grouped[1].categoryId);
+  assert.ok(paused.ai.proposals.some((proposal) => proposal.summary === '合并'));
+  paused.ai.queue = [{ id: 'q1', assetId: 'g1', assetType: 'generic', queuedAt: 1 }];
+  paused.ai.enabled = true;
+  seedDatabase(stub.local, paused);
+  globalThis.fetch = async () => ({ ok: false, status: 500, json: async () => ({}) });
+  await handleRuntimeMessage({ type: 'process-ai-now' });
+  const failedDatabase = stub.local['futurecontext.v1'];
+  assert.equal(failedDatabase.ai.status.state, 'paused');
+  assert.deepEqual(failedDatabase.ai.queue, paused.ai.queue);
+  assert.deepEqual(failedDatabase.assets, paused.assets);
+});
+
+test('runtime onMessage wrapper, permission retry, and palette broadcast fallback', async () => {
+  seedDatabase(stub.local, enableSites(createEmptyDatabase(), ['https://chatgpt.com']));
+  const originalContains = stub.chrome.permissions.contains.bind(stub.chrome.permissions);
+  stub.tabs[0].url = 'https://chatgpt.com/c/1';
+  const broadcasts = [];
+  const originalSend = stub.chrome.tabs.sendMessage;
+  stub.chrome.tabs.sendMessage = async (tabId, message) => { broadcasts.push({ tabId, message }); return { ok: true }; };
+  let containsCalls = 0;
+  stub.chrome.permissions.contains = async (query) => {
+    containsCalls += 1;
+    if (containsCalls === 1) throw new Error('transient');
+    return originalContains(query);
+  };
+  const originalExecute = stub.chrome.scripting.executeScript;
+  stub.chrome.scripting.executeScript = async () => { throw new Error('no receiver'); };
+  await handleRuntimeMessage({ type: 'sync-sites' });
+  assert.ok(containsCalls >= 2, 'permission lookup must retry after the transient failure');
+  assert.ok(broadcasts.some(({ tabId, message }) => tabId === 1 && message.type === 'fc-settings' && message.enabled === true));
+  stub.chrome.tabs.sendMessage = originalSend;
+  stub.chrome.scripting.executeScript = originalExecute;
+  stub.chrome.permissions.contains = originalContains;
+  const wrapped = stub.listeners.message[0];
+  const ok = await new Promise((resolve) => wrapped({ type: 'read-notice' }, {}, resolve));
+  assert.equal(ok.ok, true);
+  const failed = await new Promise((resolve) => wrapped({ type: 'nope' }, {}, resolve));
+  assert.equal(failed.ok, false);
+  stub.tabs[0].url = 'https://www.douyin.com/';
+  stub.listeners.command[0]('open-palette');
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  stub.tabs[0].url = 'https://chatgpt.com/c/1';
 });

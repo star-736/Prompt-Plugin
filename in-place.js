@@ -69,6 +69,9 @@ export function normalizeSiteOrigin(input) {
 export function sitePattern(origin) { return `${origin}/*`; }
 export function siteHost(origin) { try { return new URL(origin).host; } catch { return origin; } }
 export function originOfUrl(url) { try { const parsed = new URL(url); return parsed.protocol === 'https:' ? parsed.origin : null; } catch { return null; } }
+export function isRestrictedTabUrl(url) {
+  return !url || /^(chrome|edge|about|chrome-extension|devtools):/i.test(url);
+}
 export function presetFor(origin) { return SITE_PRESETS.find((preset) => preset.origin === origin) ?? null; }
 
 function hostnameOf(origin) {
