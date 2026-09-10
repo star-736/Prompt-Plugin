@@ -46,8 +46,8 @@ stub = createChromeStub({
       stub.local['futurecontext.v1'].ai.providers = stub.local['futurecontext.v1'].ai.providers.filter((p) => p.id !== message.id);
       return { ok: true, result: { ok: true } };
     }
-    if (message.type === 'collect-github-skill') return { ok: true, result: { duplicate: false, asset: { id: 'skill-1', title: 'Email reviewer' } } };
-    if (message.type === 'update-github-skill') return { ok: true, result: { changed: false } };
+    if (message.type === 'collect-github-skill') return { ok: true, result: { duplicate: false, asset: { id: 'skill-1', title: 'Email reviewer' }, hasToken: false } };
+    if (message.type === 'update-github-skill') return { ok: true, result: { changed: false, hasToken: true } };
     return { ok: false, error: `unhandled ${message.type}` };
   }
 });
@@ -101,6 +101,35 @@ function addProposal(db) {
 function toastText() {
   return document.querySelector('#toast')?.textContent || '';
 }
+
+test('GitHub Token can be saved, replaced and removed without rendering its value', async () => {
+  click('[data-action="settings"]');
+  assert.match(document.querySelector('#app').textContent, /提高公开仓库的 GitHub API 额度/);
+  assert.match(document.querySelector('#app').textContent, /明文只存在此浏览器配置文件中/);
+  assert.match(document.querySelector('#app').textContent, /不写入备份/);
+  assert.doesNotMatch(document.querySelector('#app').textContent, /私有仓库/);
+  for (const token of ['ghp_example', 'github_pat_replacement']) {
+    document.querySelector('#github-token').value = token;
+    document.querySelector('#github-token-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+    await waitFor(() => stub.local['futurecontext.github-token'] === token);
+    await waitFor(() => document.querySelector('#github-token').value === '');
+    assert.equal(document.querySelector('#app').innerHTML.includes(token), false);
+    assert.match(document.querySelector('#app').textContent, /已配置/);
+  }
+  click('[data-action="remove-github-token"]');
+  await waitFor(() => !stub.local['futurecontext.github-token']);
+  await waitFor(() => /未配置/.test(document.querySelector('#app').textContent));
+  assert.equal(JSON.stringify(createBackup(stub.local['futurecontext.v1'])).includes('github_pat_replacement'), false);
+});
+
+test('invalid GitHub Token reports a validation error without saving', async () => {
+  click('[data-action="settings"]');
+  document.querySelector('#github-token').value = 'Bearer example';
+  document.querySelector('#github-token-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  await waitFor(() => /格式不正确/.test(document.querySelector('#github-token-status').textContent));
+  assert.equal(stub.local['futurecontext.github-token'], undefined);
+  assert.equal(document.querySelector('#github-token').value, '');
+});
 
 
 test('library renders notice, tabs, and asset actions', async () => {
@@ -163,7 +192,7 @@ test('open GitHub skill package, update, and delete with confirm', async () => {
   click('[data-action="open-asset"][data-id="skill-gh"]');
   await waitFor(() => document.querySelector('[data-action="update-github-skill"]'));
   click('[data-action="update-github-skill"]');
-  await waitFor(() => /当前保存版本/.test(toastText()));
+  await waitFor(() => toastText() === '已是当前保存版本（已使用 GitHub Token）');
   click('[data-action="new-category-from-editor"]');
   await waitFor(() => document.querySelector('#editor-new-category'));
   click('[data-action="cancel-category-from-editor"]');
@@ -241,7 +270,7 @@ test('privacy lock reset, export confirm, and collect GitHub', async () => {
   stub.tabs[0].url = 'https://github.com/acme/demo/blob/main/skills/demo/SKILL.md';
   click('[data-action="collect-github-skill"]');
   await waitFor(() => messages.some((m) => m.type === 'collect-github-skill'));
-  await waitFor(() => /GitHub Skill/.test(toastText()));
+  await waitFor(() => toastText() === 'GitHub Skill 已保存（当前为匿名额度）');
   assert.doesNotMatch(toastText(), /失败/);
 });
 

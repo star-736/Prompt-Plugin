@@ -1,10 +1,48 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { checkGitHubSkillUpdate, collectGitHubSkill, filterSkillPackageBlobs, githubSkillUrlError, inspectGitHubSkillUrl, isCommitSha, isSkillMarkdownPath, skillCollectionPrefix, skillContextFromPage, validateGitHubSkillContext } from '../github-skill.js';
+import { checkGitHubSkillUpdate, collectGitHubSkill, filterSkillPackageBlobs, githubSkillUrlError, inspectGitHubSkillUrl, isCommitSha, isSkillMarkdownPath, mapGitHubHttpError, skillCollectionPrefix, skillContextFromPage, validateGitHubSkillContext } from '../github-skill.js';
 import { FILE_LIMIT_BYTES, PACKAGE_LIMIT_BYTES, assertPackageLimits } from '../package-store.js';
 
 function response(payload, status = 200) { return { ok: status >= 200 && status < 300, status, json: async () => payload }; }
 const encodedSkill = Buffer.from('---\nname: Test skill\ndescription: Test package\n---\n\nHello').toString('base64');
+
+test('GitHub errors distinguish quota, secondary limits, invalid tokens and forbidden access', async () => {
+  const context = { repository: 'acme/demo', path: 'SKILL.md', commit: 'a'.repeat(40) };
+  const reset = Math.floor(Date.now() / 1000) + 3600;
+  const cases = [
+    [403, { message: 'API rate limit exceeded' }, { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(reset) }, /请求额度已用完。请在/, false],
+    [403, { message: 'secondary rate limit' }, { 'retry-after': '120' }, /临时限流。请在/, false],
+    [429, {}, {}, /不要连续点击/, false],
+    [403, { message: 'API rate limit exceeded' }, { 'x-ratelimit-reset': 'invalid' }, /稍后重试/, false],
+    [401, { message: 'Bad credentials' }, {}, /匿名额度不足或无权访问/, false],
+    [401, { message: 'Bad credentials' }, {}, /Token 无效或已过期/, true],
+    [403, { message: 'Resource not accessible' }, {}, /填写 Token/, false],
+    [403, { message: 'Resource not accessible' }, {}, /Token 权限/, true]
+  ];
+  for (const [status, body, headers, expected, hasToken] of cases) {
+    let calls = 0;
+    const fetchImpl = async () => {
+      calls++;
+      return { ...response(body, status), headers: { get: (key) => headers[key] ?? null } };
+    };
+    fetchImpl.hasToken = hasToken;
+    await assert.rejects(() => collectGitHubSkill(context, fetchImpl), (error) => {
+      assert.match(error.message, expected);
+      if (!hasToken) assert.doesNotMatch(error.message, /Token 无效/);
+      return true;
+    });
+    assert.equal(calls, 1, 'rate limits must not cause automatic retries');
+  }
+});
+
+test('401 copy depends on whether a token is stored', () => {
+  assert.match(mapGitHubHttpError(401, { hasToken: false }), /匿名额度不足或无权访问/);
+  assert.doesNotMatch(mapGitHubHttpError(401, { hasToken: false }), /Token 无效/);
+  assert.match(mapGitHubHttpError(401, { hasToken: true }), /请在设置中更新或移除/);
+  assert.match(mapGitHubHttpError(403, { hasToken: false, body: { message: 'Resource not accessible' } }), /填写 Token/);
+  assert.doesNotMatch(mapGitHubHttpError(403, { hasToken: false, body: { message: 'Resource not accessible' } }), /Token 无效/);
+  assert.match(mapGitHubHttpError(403, { hasToken: true, body: { message: 'Resource not accessible' } }), /Token 权限/);
+});
 
 test('GitHub collection saves the complete directory at the exact page commit', async () => {
   const fetchMock = async (url) => {
@@ -203,8 +241,8 @@ test('validateGitHubSkillContext rejects missing repository, path, or ref', () =
 });
 
 test('collection maps network and GitHub HTTP errors', async () => {
-  await assert.rejects(() => collectGitHubSkill({ repository: 'acme/demo', path: 'SKILL.md', commit: 'a'.repeat(40) }, async () => { throw new Error('offline'); }), /私有仓库或网络错误/);
-  await assert.rejects(() => collectGitHubSkill({ repository: 'acme/demo', path: 'SKILL.md', commit: 'a'.repeat(40) }, async () => response({}, 404)), /私有仓库或网络错误/);
+  await assert.rejects(() => collectGitHubSkill({ repository: 'acme/demo', path: 'SKILL.md', commit: 'a'.repeat(40) }, async () => { throw new Error('offline'); }), /无法连接 GitHub API/);
+  await assert.rejects(() => collectGitHubSkill({ repository: 'acme/demo', path: 'SKILL.md', commit: 'a'.repeat(40) }, async () => response({}, 404)), /404/);
   await assert.rejects(() => collectGitHubSkill({ repository: 'acme/demo', path: 'SKILL.md', commit: 'a'.repeat(40) }, async () => response({}, 500)), /500/);
 });
 

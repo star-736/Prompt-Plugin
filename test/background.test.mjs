@@ -9,6 +9,7 @@ import {
   updateAiSettings
 } from '../store.js';
 import { createChromeStub, createMemoryIndexedDB, seedDatabase } from './helpers.mjs';
+import { saveGitHubToken } from '../github-auth.js';
 
 const skill = `---\nname: Email reviewer\ndescription: Review email drafts\n---\n\n# Instructions\nReview the email.`;
 const encodedSkill = Buffer.from(skill).toString('base64');
@@ -48,6 +49,33 @@ const stub = createChromeStub({
 seedDatabase(stub.local, enableSites(createEmptyDatabase(), ['https://chatgpt.com']));
 
 const { NOTICE_KEY, handleRuntimeMessage, githubPageContext } = await import('../background.js');
+
+test('collect and update send the configured token to every GitHub API request', async () => {
+  seedDatabase(stub.local, createEmptyDatabase());
+  await saveGitHubToken('ghp_test');
+  const previousFetch = globalThis.fetch;
+  const calls = [];
+  let mock = skillFetch('a'.repeat(40));
+  globalThis.fetch = async (url, options) => { calls.push({ url, options }); return mock(url); };
+  try {
+    const collected = await handleRuntimeMessage({ type: 'collect-github-skill', tabId: 1, url: 'https://github.com/acme/demo/blob/main/skills/demo/SKILL.md' });
+    assert.equal(collected.hasToken, true);
+    const firstCount = calls.length;
+    assert.ok(firstCount >= 3);
+    mock = skillFetch('b'.repeat(40));
+    const updated = await handleRuntimeMessage({ type: 'update-github-skill', assetId: collected.asset.id });
+    assert.equal(updated.changed, true);
+    assert.ok(calls.length > firstCount);
+    for (const { url, options } of calls) {
+      assert.equal(new URL(url).origin, 'https://api.github.com');
+      assert.equal(options.headers.Authorization, 'Bearer ghp_test');
+      assert.equal(options.redirect, 'error');
+    }
+  } finally {
+    globalThis.fetch = previousFetch;
+    await saveGitHubToken('');
+  }
+});
 
 test('unknown message type is rejected', async () => {
   await assert.rejects(() => handleRuntimeMessage({ type: 'nope' }), /未知/);
@@ -126,6 +154,7 @@ test('collect and update GitHub skills, including unchanged updates', async () =
     url: stub.tabs[0].url
   });
   assert.equal(collected.duplicate, false);
+  assert.equal(collected.hasToken, false);
   assert.equal(collected.asset.title, 'Email reviewer');
   const again = await handleRuntimeMessage({ type: 'collect-github-skill', tabId: 1, url: stub.tabs[0].url });
   assert.equal(again.duplicate, true);

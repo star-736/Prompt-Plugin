@@ -10,6 +10,16 @@ FutureContext 是一个本地优先的 Edge / Chrome 扩展，用于保存、分
 
 ## 当前能力
 
+### GitHub 收集认证
+
+在扩展「设置 → GitHub Token（可选）」粘贴个人访问令牌并保存；再次填写可替换，点击「移除 Token」恢复匿名请求。Token 用于提高公开仓库的 GitHub API 额度，并让失败原因更清楚。保存仅验证格式，不向 GitHub 发起请求；额度、权限或过期问题会在收集/更新时提示。可从 [GitHub Token 设置](https://github.com/settings/tokens) 创建令牌。
+
+Token 明文只存在此浏览器配置文件的扩展存储中，不写入资料库或导出备份，不在表单中回显。卸载扩展或清除扩展数据会删除它；能使用此浏览器配置文件的人可以读取它。它只发送到 `https://api.github.com`，请求不跟随重定向。
+
+遇到额度耗尽或临时限流时，提示会在服务器提供相关响应头时显示本地时间的重试时间；网络失败、401、403 和 404 分别给出不同原因。限流不会自动重试，也不做重复请求合并。规则参考 [GitHub API 限流说明](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api)。
+
+### 资产管理
+
 - 工具栏弹窗内完成三类资产的搜索、一级分类、编辑、复制与永久删除。
 - Skill 可直接编辑带 YAML frontmatter 的 `SKILL.md`，也可从公开 GitHub 的具体 `SKILL.md` 页面收集同目录完整包；包内脚本仅保存、绝不执行。
 - 通用 Prompt 标题可选；配置后台 AI 后可无感补全标题和归入分类。AIGC Prompt 永不发送给 AI Provider。

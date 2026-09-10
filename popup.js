@@ -40,6 +40,7 @@ import {
   verifyPrivacyPassword
 } from './store.js';
 import { PROVIDER_PRESETS, providerOrigin } from './ai-organizer.js';
+import { githubToken, saveGitHubToken } from './github-auth.js';
 import { deletePackage, exportPackages, getPackage, importPackages, isTextFile } from './package-store.js';
 import { githubSkillUrlError, inspectGitHubSkillUrl } from './github-skill.js';
 import { isPromptableSite, isRestrictedTabUrl, normalizeSiteOrigin, originCoveredBySites, originOfUrl, PALETTE_SCRIPT_FILE, patternsForSites, relatedMatchPatterns, SHORTCUT_LABEL, SITE_PRESETS, siteHost } from './in-place.js';
@@ -128,6 +129,10 @@ function showToast(message) {
   toast.textContent = message;
   toast.classList.add('is-visible');
   toastTimer = setTimeout(() => toast.classList.remove('is-visible'), 2400);
+}
+
+function githubSuccessToast(base, hasToken) {
+  return `${base}（${hasToken ? '已使用 GitHub Token' : '当前为匿名额度'}）`;
 }
 
 async function sendBackground(message) {
@@ -359,6 +364,7 @@ function renderSettings() {
   const inPlace = state.database.settings.inPlace;
   const usage = usageSummary(state.database);
   return `${renderReadOnlyBanner()}${pageHeading('设置', 'library')}<div class="settings-list">
+    <div class="setting-row setting-row-stack"><div><div class="setting-title">GitHub Token（可选）</div><div class="setting-description">${state.githubTokenConfigured ? '已配置，输入新 Token 可替换。' : '未配置，使用匿名请求额度。'}用于提高公开仓库的 GitHub API 额度，并让失败原因更清楚。明文只存在此浏览器配置文件中，不写入备份，表单不回显；卸载或清除扩展数据会删除。能使用此配置文件的人可以读取。</div></div><form id="github-token-form"><input id="github-token" type="password" autocomplete="new-password" aria-label="GitHub Token" placeholder="粘贴 GitHub Token" maxlength="512" required /><button class="button button-primary button-small" type="submit">保存 Token</button><button class="button button-ghost button-small" type="button" data-action="remove-github-token">移除 Token</button><div id="github-token-status" role="status"></div></form></div>
     <div class="setting-row"><div><div class="setting-title">隐私锁</div><div class="setting-description">${lockStatus}。重设不会删除私密内容。</div></div><button class="button button-ghost button-small" type="button" data-action="reset-lock">${hasPrivacyLock(state.database) ? '重设隐私锁' : '设置隐私锁'}</button></div>
     <div class="setting-row setting-row-stack"><div><div class="setting-title">后台 AI 整理</div><div class="setting-description">${escapeHtml(status)}${current ? ` 当前 Provider：${escapeHtml(current.label)}。` : ' 还未配置 Provider。'}</div></div><div class="setting-actions"><label class="switch-label"><input id="ai-enabled" type="checkbox" ${ai.enabled ? 'checked' : ''} />开启</label><button class="button button-ghost button-small" type="button" data-action="manage-providers">Provider</button></div></div>
     <div class="setting-row setting-row-stack"><div><div class="setting-title">就地取用</div><div class="setting-description">在启用站点的输入框输入 // 或按 ${SHORTCUT_LABEL} 调出取用面板。已启用 ${inPlace.sites.length} 个站点。实际快捷键以 edge://extensions/shortcuts（Chrome 为 chrome://extensions/shortcuts）为准；被浏览器占用时可在那里改绑。</div></div><div class="setting-actions"><label class="switch-label"><input id="inplace-enabled" type="checkbox" ${inPlace.enabled ? 'checked' : ''} />开启</label><label class="switch-label"><input id="inplace-trigger" type="checkbox" ${inPlace.triggerEnabled ? 'checked' : ''} />// 触发符</label><button class="button button-ghost button-small" type="button" data-action="manage-sites">站点</button></div></div>
@@ -816,7 +822,7 @@ async function collectGitHubSkillFromPage() {
     if (!tabId) throw new Error('无法读取该文件页的仓库信息，请刷新后重试。');
     const result = await sendBackground({ type: 'collect-github-skill', tabId, url: tabUrl });
     state.database = await loadDatabase(); render();
-    showToast(result.duplicate ? '已是当前保存版本' : 'GitHub Skill 已保存');
+    showToast(githubSuccessToast(result.duplicate ? '已是当前保存版本' : 'GitHub Skill 已保存', result.hasToken));
   } catch (error) { showToast(error.message || '收集 GitHub Skill 失败。'); }
 }
 
@@ -824,8 +830,8 @@ async function updateGitHubSkill(id) {
   try {
     const result = await sendBackground({ type: 'update-github-skill', assetId: id });
     state.database = await loadDatabase();
-    if (result.changed) { state.packageRecord = await getPackage(result.asset.skillPackage.packageId); render(); showToast('已更新为 GitHub 最新版本'); }
-    else showToast('已是当前保存版本');
+    if (result.changed) { state.packageRecord = await getPackage(result.asset.skillPackage.packageId); render(); showToast(githubSuccessToast('已更新为 GitHub 最新版本', result.hasToken)); }
+    else showToast(githubSuccessToast('已是当前保存版本', result.hasToken));
   } catch (error) { showToast(error.message || '检查 GitHub 更新失败。'); }
 }
 
@@ -850,6 +856,11 @@ async function handleClick(event) {
   }
   if (!action) return;
   if (action === 'home') return state.view === 'editor' ? returnFromEditor() : (state.view = 'library', render());
+  if (action === 'remove-github-token') {
+    try { await saveGitHubToken(''); state.githubTokenConfigured = false; render(); showToast('GitHub Token 已移除，将使用匿名请求。'); }
+    catch { showToast('无法移除 GitHub Token，请重试。'); }
+    return;
+  }
   if (action === 'settings') return state.view === 'editor' ? returnFromEditor() : (state.view = 'settings', render());
   if (action === 'library') { state.view = 'library'; return render(); }
   if (action === 'editor-back') return returnFromEditor();
@@ -940,6 +951,19 @@ function beginResetLock() {
 async function handleSubmit(event) {
   const form = event.target;
   event.preventDefault();
+  if (form.id === 'github-token-form') {
+    const input = form.querySelector('#github-token');
+    const token = input.value;
+    input.value = '';
+    try {
+      if (!token.trim()) throw new Error('请输入 Token；如需清除，请使用移除按钮。');
+      await saveGitHubToken(token);
+      state.githubTokenConfigured = true;
+      render();
+      showToast('GitHub Token 已保存，后续收集和更新将使用认证请求。');
+    } catch (error) { form.querySelector('#github-token-status').textContent = error.message; }
+    return;
+  }
   if (form.id === 'editor-form') return saveEditor();
   if (form.id === 'private-gate-form') return handlePrivateGate(form);
   if (form.id === 'reset-lock-form') return resetLock(form);
@@ -1008,6 +1032,7 @@ async function initialize() {
   try {
     state.database = await loadDatabase();
     state.readOnly = isReadOnlyDatabase(state.database);
+    state.githubTokenConfigured = Boolean(await githubToken());
     state.activeTab = ['generic', 'skill', 'aigc'].includes(state.database.settings.lastNormalTab) ? state.database.settings.lastNormalTab : 'generic';
     try {
       const notice = await sendBackground({ type: 'read-notice' });
