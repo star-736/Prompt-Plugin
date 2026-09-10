@@ -153,6 +153,10 @@ export function formatSkillInsert(text, type) {
   if (type !== 'skill' || !content || !SKILL_INSERT_PREFIX) return content;
   return `${SKILL_INSERT_PREFIX}\n${content}`;
 }
+// 取用/复制载荷只用正文。标题留在面板搜索与展示，不拼进插入文本。
+export function formatPaletteInsert(asset) {
+  return formatSkillInsert(asset?.content ?? '', asset?.type);
+}
 export function validateAsset(input) {
   const type = input.type; const privacy = input.privacy ?? 'normal'; scopeFor(type, privacy);
   const content = String(input.content ?? ''); if (!content.trim()) throw new Error('内容不能为空。');

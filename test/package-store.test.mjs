@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { assertPackageLimits, deletePackage, exportPackages, FILE_LIMIT_BYTES, getPackage, importPackages, isTextFile, PACKAGE_LIMIT_BYTES, putPackage } from '../package-store.js';
+import { assertPackageLimits, buildPackageFileTree, deletePackage, exportPackages, FILE_LIMIT_BYTES, getPackage, importPackages, isTextFile, PACKAGE_LIMIT_BYTES, putPackage } from '../package-store.js';
 import { createMemoryIndexedDB } from './helpers.mjs';
 
 test('isTextFile recognizes markdown, scripts, and JSON content types', () => {
@@ -36,4 +36,30 @@ test('IndexedDB package helpers put, get, export, import, and delete', async () 
 
 test('putPackage rejects an incomplete record', async () => {
   await assert.rejects(() => putPackage({ id: 'x' }, createMemoryIndexedDB()), /不完整/);
+});
+
+test('buildPackageFileTree nests folders, pins SKILL.md, and keeps stored paths', () => {
+  const openai = { path: 'agents/openai.yaml', size: 12 };
+  const skill = { path: 'SKILL.md', size: 20 };
+  const tree = buildPackageFileTree([
+    { path: 'CONTEXT-FORMAT.md', size: 5 },
+    openai,
+    skill,
+    { path: 'ADR-FORMAT.md', size: 5 },
+    { path: 'scripts/helpers/util.py', size: 8 },
+    { path: '' },
+    { path: '/agents/claude.yaml' }
+  ]);
+  assert.deepEqual(tree.map((node) => `${node.type}:${node.name}`), ['dir:agents', 'dir:scripts', 'file:SKILL.md', 'file:ADR-FORMAT.md', 'file:CONTEXT-FORMAT.md']);
+  assert.deepEqual(tree[0].children.map((node) => node.name), ['claude.yaml', 'openai.yaml']);
+  assert.equal(tree[0].children[1].path, 'agents/openai.yaml');
+  assert.equal(tree[0].children[1].file, openai);
+  assert.equal(openai.path, 'agents/openai.yaml');
+  assert.equal(tree[1].children[0].type, 'dir');
+  assert.equal(tree[1].children[0].name, 'helpers');
+  assert.equal(tree[1].children[0].children[0].name, 'util.py');
+  assert.equal(tree[1].children[0].children[0].path, 'scripts/helpers/util.py');
+  assert.equal(tree[2].file, skill);
+  assert.equal(buildPackageFileTree().length, 0);
+  assert.ok(!JSON.stringify(tree).includes('empty'));
 });

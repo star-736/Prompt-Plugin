@@ -91,16 +91,26 @@ test('schedule-ai, notice, and session messages work', async () => {
 
 test('palette settings, query, and insert respect site coverage and skill prefix', async () => {
   let database = enableSites(createEmptyDatabase(), ['https://chatgpt.com']);
-  database = saveAsset(database, { type: 'generic', title: '邮件', content: '写一封邮件' }, { id: 'g1', now: 1 }).database;
+  database = saveAsset(database, { type: 'generic', title: '周报标题', content: '总结本周工作' }, { id: 'g1', now: 1 }).database;
   database = saveAsset(database, { type: 'skill', content: skill }, { id: 's1', now: 2 }).database;
+  database = saveAsset(database, { type: 'aigc', title: '场景', content: '电影感雨夜' }, { id: 'a1', now: 3 }).database;
   seedDatabase(stub.local, database);
   const sender = githubSender('https://chatgpt.com/c/1');
   const settings = await handleRuntimeMessage({ type: 'palette-settings' }, sender);
   assert.equal(settings.enabled, true);
-  const items = await handleRuntimeMessage({ type: 'palette-query', query: '邮件' }, sender);
+  const items = await handleRuntimeMessage({ type: 'palette-query', query: '周报标题' }, sender);
   assert.equal(items[0].id, 'g1');
+  const genericInserted = await handleRuntimeMessage({ type: 'palette-insert', id: 'g1' }, sender);
+  assert.equal(genericInserted.content, '总结本周工作');
+  assert.notEqual(genericInserted.content, '周报标题总结本周工作');
+  assert.notEqual(genericInserted.content, '周报标题\n总结本周工作');
   const inserted = await handleRuntimeMessage({ type: 'palette-insert', id: 's1' }, sender);
   assert.match(inserted.content, /基于以下 skill/);
+  assert.equal(inserted.content.startsWith('基于以下 skill 辅助我解决问题\n---'), true);
+  assert.equal(inserted.content.includes('Email reviewer\n---'), false);
+  const aigcInserted = await handleRuntimeMessage({ type: 'palette-insert', id: 'a1' }, sender);
+  assert.equal(aigcInserted.content, '电影感雨夜');
+  assert.notEqual(aigcInserted.content, '场景\n电影感雨夜');
   await assert.rejects(() => handleRuntimeMessage({ type: 'palette-insert', id: 'missing' }, sender), /找不到/);
   await assert.rejects(() => handleRuntimeMessage({ type: 'palette-insert', id: 'g1' }, githubSender('https://www.douyin.com/')), /未启用/);
   assert.deepEqual(await handleRuntimeMessage({ type: 'palette-query', query: '' }, githubSender('https://www.douyin.com/')), []);

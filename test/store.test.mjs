@@ -19,6 +19,7 @@ import {
   discardDraft,
   displayTitle,
   encryptProviderKey,
+  formatPaletteInsert,
   formatSkillInsert,
   getDraft,
   hasPrivacyLock,
@@ -102,6 +103,20 @@ test('formatSkillInsert prefixes skill payloads only and does not mutate saved a
   assert.equal(saved.asset.content.includes(SKILL_INSERT_PREFIX), false);
   const github = saveGithubSkillAsset(createEmptyDatabase(), { id: 'package-fmt', skillContent: skill, fileCount: 2, totalSize: 120, source: { repository: 'acme/demo', directory: 'skills/review', commit: 'abc', defaultBranch: 'main', url: 'https://github.com/acme/demo/blob/main/skills/review/SKILL.md' } }, { id: 'skill-gh-fmt' });
   assert.equal(github.asset.content, skill);
+});
+
+test('formatPaletteInsert uses content only and never prepends title', () => {
+  const generic = { type: 'generic', title: '周报标题', content: '总结本周工作' };
+  assert.equal(formatPaletteInsert(generic), '总结本周工作');
+  assert.notEqual(formatPaletteInsert(generic), `${generic.title}${generic.content}`);
+  assert.notEqual(formatPaletteInsert(generic), `${generic.title}\n${generic.content}`);
+  const aigc = { type: 'aigc', title: '场景', content: '电影感雨夜' };
+  assert.equal(formatPaletteInsert(aigc), '电影感雨夜');
+  assert.notEqual(formatPaletteInsert(aigc), `${aigc.title}\n${aigc.content}`);
+  const skillAsset = { type: 'skill', title: 'Email reviewer', content: skill };
+  assert.equal(formatPaletteInsert(skillAsset), `${SKILL_INSERT_PREFIX}\n${skill}`);
+  assert.notEqual(formatPaletteInsert(skillAsset), `${SKILL_INSERT_PREFIX}\n${skillAsset.title}\n${skill}`);
+  assert.equal(formatPaletteInsert({ type: 'skill', title: 'Email reviewer', content: '' }), '');
 });
 
 test('provider keys are encrypted and become inaccessible after privacy password reset', async () => {

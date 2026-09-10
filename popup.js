@@ -41,7 +41,7 @@ import {
 } from './store.js';
 import { PROVIDER_PRESETS, providerOrigin } from './ai-organizer.js';
 import { githubToken, saveGitHubToken } from './github-auth.js';
-import { deletePackage, exportPackages, getPackage, importPackages, isTextFile } from './package-store.js';
+import { buildPackageFileTree, deletePackage, exportPackages, getPackage, importPackages, isTextFile } from './package-store.js';
 import { githubSkillUrlError, inspectGitHubSkillUrl } from './github-skill.js';
 import { isPromptableSite, isRestrictedTabUrl, normalizeSiteOrigin, originCoveredBySites, originOfUrl, PALETTE_SCRIPT_FILE, patternsForSites, relatedMatchPatterns, SHORTCUT_LABEL, SITE_PRESETS, siteHost } from './in-place.js';
 
@@ -104,6 +104,10 @@ function chevronIcon() {
   return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>';
 }
 
+function folderIcon() {
+  return '<svg class="package-folder-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 8h6l2 2h10v9H3z"/><path d="M3 8V6h5l2 2"/></svg>';
+}
+
 function isPrivateView() {
   return state.activeTab === 'aigc' && state.privacy === 'private';
 }
@@ -124,11 +128,24 @@ function currentCategoryLabel() {
   return state.categoryId ? categoryName(state.categoryId) : '全部分类';
 }
 
-function showToast(message) {
+function showToast(message, sticky = false) {
   clearTimeout(toastTimer);
   toast.textContent = message;
   toast.classList.add('is-visible');
+  if (sticky) return;
   toastTimer = setTimeout(() => toast.classList.remove('is-visible'), 2400);
+}
+
+async function withGithubProgress(selector, pendingMessage, run) {
+  const button = document.querySelector(selector);
+  if (button?.disabled) return;
+  if (button) button.disabled = true;
+  showToast(pendingMessage, true);
+  try { await run(); }
+  finally {
+    const current = document.querySelector(selector);
+    if (current) current.disabled = false;
+  }
 }
 
 function githubSuccessToast(base, hasToken) {
@@ -406,11 +423,20 @@ function decodePackageText(file) {
   try { return decodeURIComponent(Array.from(atob(String(file.content ?? '').replace(/\n/g, '')), (char) => `%${char.charCodeAt(0).toString(16).padStart(2, '0')}`).join('')); } catch { return ''; }
 }
 
+function renderPackageFile(file, label) {
+  const body = isTextFile(file.path, file.contentType) ? `${/\.(py|sh|bash|zsh|ps1|js|mjs|cjs)$/i.test(file.path) ? '<p class="script-note">仅保存，不执行。</p>' : ''}<pre>${escapeHtml(decodePackageText(file))}</pre>` : '<p class="script-note">二进制资源：仅保存，不执行。</p>';
+  return `<details class="package-file"${file.path === 'SKILL.md' ? ' open' : ''}><summary>${escapeHtml(label)} <span>${Math.ceil(file.size / 1024)} KB</span></summary>${body}</details>`;
+}
+
+function renderPackageTreeNodes(nodes) {
+  return nodes.map((node) => node.type === 'dir' ? `<details class="package-folder" open><summary>${folderIcon()}${escapeHtml(node.name)}/</summary>\n<div class="package-tree-children">${renderPackageTreeNodes(node.children)}</div></details>` : renderPackageFile(node.file, node.name)).join('');
+}
+
 function renderPackageDetail() {
   const asset = state.database.assets.find((item) => item.id === state.packageAssetId);
   const record = state.packageRecord;
   if (!asset || !record) return `${pageHeading('Skill 文件', 'library')}<div class="empty-state"><p>无法读取本地 Skill 文件。</p></div>`;
-  return `${renderReadOnlyBanner()}${pageHeading(asset.title, 'library')}<section class="section-card package-source"><h2>GitHub Skill</h2><p>${escapeHtml(asset.skillPackage.source.repository)} · ${escapeHtml(asset.skillPackage.source.directory)} · ${escapeHtml(asset.skillPackage.source.commit.slice(0, 7))}</p><div class="section-actions"><button class="button button-ghost button-small" type="button" data-action="update-github-skill" data-id="${asset.id}">检查 GitHub 更新</button><button class="button button-ghost button-small pin-button ${asset.pinned ? 'is-pinned' : ''}" type="button" data-action="toggle-pin" data-id="${asset.id}">${asset.pinned ? '已置顶' : '置顶'}</button><button class="button button-ghost button-small" type="button" data-action="copy-asset" data-id="${asset.id}">复制 SKILL.md</button><button class="button button-ghost button-small" type="button" data-action="delete-asset" data-id="${asset.id}">永久删除</button></div></section><div class="package-category">${categoryOptions('skill', 'normal', asset.categoryId, state.packageCategoryCreating)}</div><div class="package-tree">${record.files.map((file) => `<details class="package-file" ${file.path === 'SKILL.md' ? 'open' : ''}><summary>${escapeHtml(file.path)} <span>${Math.ceil(file.size / 1024)} KB</span></summary>${isTextFile(file.path, file.contentType) ? `${/\.(py|sh|bash|zsh|ps1|js|mjs|cjs)$/i.test(file.path) ? '<p class="script-note">仅保存，不执行。</p>' : ''}<pre>${escapeHtml(decodePackageText(file))}</pre>` : '<p class="script-note">二进制资源：仅保存，不执行。</p>'}</details>`).join('')}</div>`;
+  return `${renderReadOnlyBanner()}${pageHeading(asset.title, 'library')}<section class="section-card package-source"><h2>GitHub Skill</h2><p>${escapeHtml(asset.skillPackage.source.repository)} · ${escapeHtml(asset.skillPackage.source.directory)} · ${escapeHtml(asset.skillPackage.source.commit.slice(0, 7))}</p><div class="section-actions"><button class="button button-ghost button-small" type="button" data-action="update-github-skill" data-id="${asset.id}">检查 GitHub 更新</button><button class="button button-ghost button-small pin-button ${asset.pinned ? 'is-pinned' : ''}" type="button" data-action="toggle-pin" data-id="${asset.id}">${asset.pinned ? '已置顶' : '置顶'}</button><button class="button button-ghost button-small" type="button" data-action="copy-asset" data-id="${asset.id}">复制 SKILL.md</button><button class="button button-ghost button-small" type="button" data-action="delete-asset" data-id="${asset.id}">永久删除</button></div></section><div class="package-category">${categoryOptions('skill', 'normal', asset.categoryId, state.packageCategoryCreating)}</div><div class="package-tree">${renderPackageTreeNodes(buildPackageFileTree(record.files))}</div>`;
 }
 
 function renderLockReset() {
@@ -802,37 +828,41 @@ async function queryContentTab() {
 }
 
 async function collectGitHubSkillFromPage() {
-  try {
-    let tabId = state.tabId;
-    let tabUrl = state.tabUrl || '';
-    await requestOrigins(['https://github.com/*', 'https://api.github.com/*']);
-    if (tabId) {
-      try {
-        const tab = await chrome.tabs.get(tabId);
-        if (tab?.url) tabUrl = tab.url;
-      } catch { /* 打开弹窗时的标签可能已关闭。 */ }
-    }
-    if (isRestrictedTabUrl(tabUrl)) {
-      const tab = await queryContentTab();
-      tabId = tab?.id ?? tabId;
-      tabUrl = tab?.url || tabUrl;
-    }
-    const inspection = inspectGitHubSkillUrl(tabUrl);
-    if (inspection.kind !== 'skill-file') throw new Error(githubSkillUrlError(inspection.kind));
-    if (!tabId) throw new Error('无法读取该文件页的仓库信息，请刷新后重试。');
-    const result = await sendBackground({ type: 'collect-github-skill', tabId, url: tabUrl });
-    state.database = await loadDatabase(); render();
-    showToast(githubSuccessToast(result.duplicate ? '已是当前保存版本' : 'GitHub Skill 已保存', result.hasToken));
-  } catch (error) { showToast(error.message || '收集 GitHub Skill 失败。'); }
+  await withGithubProgress('[data-action="collect-github-skill"]', '正在从 GitHub 收集…', async () => {
+    try {
+      let tabId = state.tabId;
+      let tabUrl = state.tabUrl || '';
+      await requestOrigins(['https://github.com/*', 'https://api.github.com/*']);
+      if (tabId) {
+        try {
+          const tab = await chrome.tabs.get(tabId);
+          if (tab?.url) tabUrl = tab.url;
+        } catch { /* 打开弹窗时的标签可能已关闭。 */ }
+      }
+      if (isRestrictedTabUrl(tabUrl)) {
+        const tab = await queryContentTab();
+        tabId = tab?.id ?? tabId;
+        tabUrl = tab?.url || tabUrl;
+      }
+      const inspection = inspectGitHubSkillUrl(tabUrl);
+      if (inspection.kind !== 'skill-file') throw new Error(githubSkillUrlError(inspection.kind));
+      if (!tabId) throw new Error('无法读取该文件页的仓库信息，请刷新后重试。');
+      const result = await sendBackground({ type: 'collect-github-skill', tabId, url: tabUrl });
+      state.database = await loadDatabase(); render();
+      showToast(githubSuccessToast(result.duplicate ? '已是当前保存版本' : 'GitHub Skill 已保存', result.hasToken));
+    } catch (error) { showToast(error.message || '收集 GitHub Skill 失败。'); }
+  });
 }
 
 async function updateGitHubSkill(id) {
-  try {
-    const result = await sendBackground({ type: 'update-github-skill', assetId: id });
-    state.database = await loadDatabase();
-    if (result.changed) { state.packageRecord = await getPackage(result.asset.skillPackage.packageId); render(); showToast(githubSuccessToast('已更新为 GitHub 最新版本', result.hasToken)); }
-    else showToast(githubSuccessToast('已是当前保存版本', result.hasToken));
-  } catch (error) { showToast(error.message || '检查 GitHub 更新失败。'); }
+  await withGithubProgress('[data-action="update-github-skill"]', '正在检查 GitHub 更新…', async () => {
+    try {
+      const result = await sendBackground({ type: 'update-github-skill', assetId: id });
+      state.database = await loadDatabase();
+      if (result.changed) { state.packageRecord = await getPackage(result.asset.skillPackage.packageId); render(); showToast(githubSuccessToast('已更新为 GitHub 最新版本', result.hasToken)); }
+      else showToast(githubSuccessToast('已是当前保存版本', result.hasToken));
+    } catch (error) { showToast(error.message || '检查 GitHub 更新失败。'); }
+  });
 }
 
 async function handleClick(event) {

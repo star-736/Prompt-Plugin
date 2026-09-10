@@ -8,7 +8,7 @@ import {
   commitGithubSkillPackage,
   decryptProviderKey,
   displayTitle,
-  formatSkillInsert,
+  formatPaletteInsert,
   isReadOnlyDatabase,
   loadDatabase,
   paletteAssets,
@@ -187,7 +187,7 @@ async function paletteInsert(id, sender) {
   const asset = database.assets.find((item) => item.id === id && item.privacy === 'normal');
   if (!asset) throw new Error('找不到该条目。');
   if (!isReadOnlyDatabase(database)) await saveDatabase(recordAssetUse(database, id));
-  return { content: formatSkillInsert(asset.content, asset.type) };
+  return { content: formatPaletteInsert(asset) };
 }
 async function setStatus(database, state, message = '') { const next = updateAiSettings(database, { status: { state, message } }); await saveDatabase(next); return next; }
 

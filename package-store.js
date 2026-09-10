@@ -89,3 +89,47 @@ export function assertPackageLimits(files) {
 export function isTextFile(path, contentType = '') {
   return /^(text\/|application\/(json|javascript|x-javascript|xml|yaml|x-yaml))/.test(contentType) || /\.(md|mdx|txt|json|ya?ml|js|mjs|cjs|ts|tsx|jsx|py|sh|bash|zsh|ps1|css|html?|xml|toml|ini|cfg|sql)$/i.test(path);
 }
+
+function pathSegments(path) {
+  return String(path ?? '').replace(/\\/g, '/').split('/').filter(Boolean);
+}
+
+function comparePackageTreeNodes(a, b, pinSkillMd) {
+  if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+  if (pinSkillMd && a.type === 'file') {
+    if (a.name === 'SKILL.md' && b.name !== 'SKILL.md') return -1;
+    if (b.name === 'SKILL.md' && a.name !== 'SKILL.md') return 1;
+  }
+  return a.name.localeCompare(b.name, 'en');
+}
+
+function sortPackageTree(nodes, pinSkillMd) {
+  nodes.sort((a, b) => comparePackageTreeNodes(a, b, pinSkillMd));
+  for (const node of nodes) {
+    if (node.type === 'dir') sortPackageTree(node.children, false);
+  }
+  return nodes;
+}
+
+export function buildPackageFileTree(files) {
+  const root = [];
+  for (const file of files ?? []) {
+    const parts = pathSegments(file.path);
+    if (!parts.length) continue;
+    let siblings = root;
+    let prefix = '';
+    for (let index = 0; index < parts.length - 1; index += 1) {
+      const name = parts[index];
+      prefix = prefix ? `${prefix}/${name}` : name;
+      let folder = siblings.find((node) => node.type === 'dir' && node.name === name);
+      if (!folder) {
+        folder = { type: 'dir', name, path: prefix, children: [] };
+        siblings.push(folder);
+      }
+      siblings = folder.children;
+    }
+    const name = parts[parts.length - 1];
+    siblings.push({ type: 'file', name, path: parts.join('/'), file });
+  }
+  return sortPackageTree(root, true);
+}

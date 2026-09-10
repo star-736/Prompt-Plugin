@@ -82,9 +82,12 @@ seedDatabase(stub.local, database);
 
 await import('../package-store.js').then(({ putPackage }) => putPackage({
   id: 'pkg-1',
-  files: [{ path: 'SKILL.md', content: Buffer.from(skill).toString('base64'), size: 20, contentType: 'text/plain' }],
-  fileCount: 1,
-  totalSize: 20
+  files: [
+    { path: 'SKILL.md', content: Buffer.from(skill).toString('base64'), size: 20, contentType: 'text/plain' },
+    { path: 'agents/openai.yaml', content: Buffer.from('model: gpt-4').toString('base64'), size: 12, contentType: 'text/yaml' }
+  ],
+  fileCount: 2,
+  totalSize: 32
 }, indexedDb));
 
 await loadFreshEntry('../popup.js');
@@ -100,6 +103,17 @@ function addProposal(db) {
 
 function toastText() {
   return document.querySelector('#toast')?.textContent || '';
+}
+
+function holdRuntimeMessage(type) {
+  let release = () => {};
+  const gate = new Promise((resolve) => { release = resolve; });
+  const original = globalThis.chrome.runtime.sendMessage;
+  globalThis.chrome.runtime.sendMessage = async (message) => {
+    if (message.type === type) await gate;
+    return original(message);
+  };
+  return () => release();
 }
 
 test('GitHub Token can be saved, replaced and removed without rendering its value', async () => {
@@ -191,8 +205,19 @@ test('open GitHub skill package, update, and delete with confirm', async () => {
   await waitFor(() => document.querySelector('[data-id="skill-gh"]'));
   click('[data-action="open-asset"][data-id="skill-gh"]');
   await waitFor(() => document.querySelector('[data-action="update-github-skill"]'));
+  const fileLabels = [...document.querySelectorAll('.package-file > summary')].map((el) => el.childNodes[0].textContent.trim());
+  assert.deepEqual(fileLabels, ['openai.yaml', 'SKILL.md']);
+  assert.equal(document.querySelector('.package-folder > summary').textContent.trim(), 'agents/');
+  assert.equal(document.querySelector('.package-folder').open, true);
+  assert.equal(document.querySelector('.package-file[open] > summary').childNodes[0].textContent.trim(), 'SKILL.md');
+  assert.equal(document.querySelector('.package-tree').textContent.includes('agents/openai.yaml'), false);
+  const releaseUpdate = holdRuntimeMessage('update-github-skill');
   click('[data-action="update-github-skill"]');
+  await waitFor(() => toastText() === '正在检查 GitHub 更新…');
+  assert.equal(document.querySelector('[data-action="update-github-skill"]').disabled, true);
+  releaseUpdate();
   await waitFor(() => toastText() === '已是当前保存版本（已使用 GitHub Token）');
+  assert.equal(document.querySelector('[data-action="update-github-skill"]').disabled, false);
   click('[data-action="new-category-from-editor"]');
   await waitFor(() => document.querySelector('#editor-new-category'));
   click('[data-action="cancel-category-from-editor"]');
@@ -268,9 +293,14 @@ test('privacy lock reset, export confirm, and collect GitHub', async () => {
   click('[data-tab="skill"]');
   await waitFor(() => document.querySelector('[data-action="collect-github-skill"]'));
   stub.tabs[0].url = 'https://github.com/acme/demo/blob/main/skills/demo/SKILL.md';
+  const releaseCollect = holdRuntimeMessage('collect-github-skill');
   click('[data-action="collect-github-skill"]');
+  await waitFor(() => toastText() === '正在从 GitHub 收集…');
+  assert.equal(document.querySelector('[data-action="collect-github-skill"]').disabled, true);
+  releaseCollect();
   await waitFor(() => messages.some((m) => m.type === 'collect-github-skill'));
   await waitFor(() => toastText() === 'GitHub Skill 已保存（当前为匿名额度）');
+  assert.equal(document.querySelector('[data-action="collect-github-skill"]').disabled, false);
   assert.doesNotMatch(toastText(), /失败/);
 });
 
