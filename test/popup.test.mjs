@@ -200,6 +200,36 @@ test('editor save, category create, and back', async () => {
   await waitFor(() => /已保存/.test(toastText()) || document.querySelector('.asset-list'));
 });
 
+test('terminal command tab: create, categorize, list, and copy', async () => {
+  click('[data-tab="command"]');
+  await waitFor(() => document.querySelector('[data-tab="command"].is-active'));
+  assert.match(document.querySelector('#app').innerHTML, /暂无终端指令/);
+
+  click('[data-action="new-asset"]');
+  await waitFor(() => document.querySelector('#editor-form'));
+  // Terminal commands have an optional title field and a category selector.
+  assert.ok(document.querySelector('#editor-title-input'));
+  assert.ok(document.querySelector('#editor-category'));
+  assert.match(document.querySelector('.editor-form').innerHTML, /命令/);
+
+  document.querySelector('#editor-title-input').value = 'codex 免确认';
+  document.querySelector('#editor-content').value = 'codex --dangerously-bypass-approvals-and-sandbox';
+  document.querySelector('#editor-content').dispatchEvent(new window.Event('input', { bubbles: true }));
+  await flush(20);
+  click('[data-action="new-category-from-editor"]');
+  await waitFor(() => document.querySelector('#editor-new-category'));
+  document.querySelector('#editor-new-category').value = 'AI Agent';
+  click('[data-action="create-category-from-editor"]');
+  await waitFor(() => /分类已新建/.test(toastText()));
+  document.querySelector('#editor-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+
+  await waitFor(() => document.querySelector('[data-action="open-asset"]'));
+  assert.match(document.querySelector('.asset-list').innerHTML, /codex 免确认/);
+  assert.match(document.querySelector('.asset-list').innerHTML, /AI Agent/);
+  click('[data-action="copy-asset"]');
+  await waitFor(() => /复制/.test(toastText()));
+});
+
 test('open GitHub skill package, update, and delete with confirm', async () => {
   click('[data-tab="skill"]');
   await waitFor(() => document.querySelector('[data-id="skill-gh"]'));

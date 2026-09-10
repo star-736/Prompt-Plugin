@@ -53,7 +53,7 @@ const confirmTitle = document.querySelector('#confirm-title');
 const confirmDescription = document.querySelector('#confirm-description');
 const confirmAction = document.querySelector('#confirm-action');
 
-const labels = { generic: '通用 Prompt', skill: 'Skill', aigc: 'AIGC Prompt' };
+const labels = { generic: '通用 Prompt', skill: 'Skill', aigc: 'AIGC Prompt', command: '终端指令' };
 const state = {
   database: null,
   view: 'library',
@@ -345,9 +345,10 @@ function renderEditor() {
   const { type, privacy, assetId, values } = state.editor;
   const existing = assetId ? state.database.assets.find((asset) => asset.id === assetId) : null;
   const isSkill = type === 'skill';
+  const isCommand = type === 'command';
   const heading = existing ? `编辑${labels[type]}` : `新建${labels[type]}`;
-  const titleField = type === 'generic' ? '<div class="field"><label>标题（可选）<input id="editor-title-input" maxlength="120" value="' + escapeHtml(values.title) + '" /></label></div>' : '';
-  const contentLabel = isSkill ? 'SKILL.md' : '内容';
+  const titleField = ['generic', 'command'].includes(type) ? '<div class="field"><label>标题（可选）<input id="editor-title-input" maxlength="120" value="' + escapeHtml(values.title) + '" /></label></div>' : '';
+  const contentLabel = isSkill ? 'SKILL.md' : isCommand ? '命令' : '内容';
   const contentHelp = isSkill ? '<p class="form-help">保存时会校验 YAML frontmatter 中的 name 与 description。</p>' : '';
   const management = existing?.type === 'aigc' ? `<div class="secondary-management">
       <button class="button button-ghost button-small" type="button" data-action="move-asset" data-id="${existing.id}" data-target="${existing.privacy === 'private' ? 'normal' : 'private'}">${existing.privacy === 'private' ? '移出私密库' : '移入私密库'}</button>
@@ -356,7 +357,7 @@ function renderEditor() {
   return `${renderReadOnlyBanner()}${pageHeading(heading, 'editor-back')}<form class="editor-form" id="editor-form">
     ${titleField}
     ${categoryOptions(type, privacy, values.categoryId, state.editor.categoryCreating)}
-    <div class="field"><label>${contentLabel}<textarea id="editor-content" class="${isSkill ? 'skill-editor' : ''}" ${isSkill ? '' : 'required'}>${escapeHtml(values.content)}</textarea></label>${contentHelp}</div>
+    <div class="field"><label>${contentLabel}<textarea id="editor-content" class="${isSkill ? 'skill-editor' : isCommand ? 'command-editor' : ''}" ${isSkill ? '' : 'required'}>${escapeHtml(values.content)}</textarea></label>${contentHelp}</div>
     <div class="editor-footer">
       <button class="button button-ghost button-small copy-editor" type="button" data-action="copy-editor">复制</button>
       <span class="status-line">${existing ? `上次保存 ${new Date(existing.updatedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}` : ''}</span>
@@ -497,8 +498,8 @@ function openEditor(asset = null) {
   const reference = { type, privacy, id: asset?.id ?? null };
   const draft = getDraft(state.database, reference);
   const baseline = asset
-    ? { title: asset.type === 'generic' ? asset.title : '', content: asset.content, categoryId: ['generic', 'skill'].includes(asset.type) ? asset.categoryId : null }
-    : { title: '', content: '', categoryId: ['generic', 'skill'].includes(type) && privacy !== 'private' ? state.categoryId : null };
+    ? { title: ['generic', 'command'].includes(asset.type) ? asset.title : '', content: asset.content, categoryId: ['generic', 'skill', 'command'].includes(asset.type) ? asset.categoryId : null }
+    : { title: '', content: '', categoryId: ['generic', 'skill', 'command'].includes(type) && privacy !== 'private' ? state.categoryId : null };
   const values = draft ? { title: draft.title ?? '', content: draft.content ?? '', categoryId: draft.categoryId ?? null } : baseline;
   state.editor = { type, privacy, assetId: asset?.id ?? null, reference, baseline, values };
   state.view = 'editor';
@@ -1063,7 +1064,7 @@ async function initialize() {
     state.database = await loadDatabase();
     state.readOnly = isReadOnlyDatabase(state.database);
     state.githubTokenConfigured = Boolean(await githubToken());
-    state.activeTab = ['generic', 'skill', 'aigc'].includes(state.database.settings.lastNormalTab) ? state.database.settings.lastNormalTab : 'generic';
+    state.activeTab = ['generic', 'skill', 'aigc', 'command'].includes(state.database.settings.lastNormalTab) ? state.database.settings.lastNormalTab : 'generic';
     try {
       const notice = await sendBackground({ type: 'read-notice' });
       if (notice?.message) state.notice = notice.message;

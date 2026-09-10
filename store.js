@@ -1,7 +1,7 @@
 export const APP_STORAGE_KEY = 'futurecontext.v1';
 export const BACKUP_FORMAT = 'futurecontext.backup';
-export const ASSET_TYPES = Object.freeze(['generic', 'skill', 'aigc']);
-export const CATEGORY_SCOPES = Object.freeze(['generic', 'skill', 'aigc-normal']);
+export const ASSET_TYPES = Object.freeze(['generic', 'skill', 'aigc', 'command']);
+export const CATEGORY_SCOPES = Object.freeze(['generic', 'skill', 'aigc-normal', 'command']);
 export const DEFAULT_AI_THRESHOLDS = Object.freeze({ uncategorized: 7, restructureChanges: 7, restructureDays: 14 });
 export const CURRENT_DATABASE_VERSION = 2;
 export const SORT_OPTIONS = Object.freeze({ updated: '最近编辑', lastUsed: '最近取用', mostUsed: '最常取用' });
@@ -142,7 +142,7 @@ export function parseSkillMetadata(content) {
 export function displayTitle(asset) {
   if (asset.type !== 'aigc' && asset.title?.trim()) return asset.title.trim();
   const first = String(asset.content ?? '').split(/\r?\n/).find((line) => line.trim())?.trim() ?? '';
-  const fallback = asset.type === 'aigc' ? '未命名 AIGC Prompt' : '未命名 Prompt';
+  const fallback = asset.type === 'aigc' ? '未命名 AIGC Prompt' : asset.type === 'command' ? '未命名指令' : '未命名 Prompt';
   return first.length > 32 ? `${first.slice(0, 32)}…` : first || fallback;
 }
 
