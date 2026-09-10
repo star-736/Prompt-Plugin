@@ -17,6 +17,30 @@ function decodeBase64(value) {
   return decodeURIComponent(Array.from(atob(value.replace(/\n/g, '')), (char) => `%${char.charCodeAt(0).toString(16).padStart(2, '0')}`).join(''));
 }
 
+export function mapGitHubHttpError(status, { body = {}, header = () => null, hasToken = false } = {}) {
+  if ([403, 429].includes(status) && (status === 429 || header('x-ratelimit-remaining') === '0' || header('retry-after') || /rate limit/i.test(body?.message ?? ''))) {
+    const retry = header('retry-after');
+    const reset = header('x-ratelimit-reset');
+    const at = retry ? (/^\d+$/.test(retry) ? Date.now() + Number(retry) * 1000 : Date.parse(retry)) : reset ? Number(reset) * 1000 : NaN;
+    const wait = Number.isFinite(at) && at > Date.now() && at <= 8640000000000000
+      ? `请在 ${new Date(at).toLocaleString()} 后重试。` : '请稍后重试，不要连续点击收集。';
+    const secondary = /secondary/i.test(body?.message ?? '') || (header('x-ratelimit-remaining') !== '0' && Boolean(retry));
+    return `GitHub ${secondary ? '临时限流' : 'API 请求额度已用完'}。${wait}可在设置中配置或检查 GitHub Token。`;
+  }
+  if (status === 401) {
+    return hasToken
+      ? 'GitHub Token 无效或已过期，请在设置中更新或移除。'
+      : 'GitHub 访问失败（401）。可能是匿名额度不足或无权访问，请在设置中填写 Token 后再试。';
+  }
+  if (status === 403) {
+    return hasToken
+      ? 'GitHub 拒绝访问（403），请检查 Token 权限或组织访问限制。'
+      : 'GitHub 访问失败（403）。可能是匿名额度不足或无权访问，请在设置中填写 Token 后再试。';
+  }
+  if (status === 404) return 'GitHub 资源不存在或无权访问（404），请检查仓库、分支或 Token 权限。';
+  return `GitHub 请求失败（${status}）。`;
+}
+
 async function json(fetchImpl, url) {
   let response;
   try {
@@ -28,19 +52,7 @@ async function json(fetchImpl, url) {
     const header = (name) => response.headers?.get?.(name);
     let body = {};
     try { body = await response.json(); } catch { /* Some proxy errors are not JSON. */ }
-    if ([403, 429].includes(response.status) && (response.status === 429 || header('x-ratelimit-remaining') === '0' || header('retry-after') || /rate limit/i.test(body?.message ?? ''))) {
-      const retry = header('retry-after');
-      const reset = header('x-ratelimit-reset');
-      const at = retry ? (/^\d+$/.test(retry) ? Date.now() + Number(retry) * 1000 : Date.parse(retry)) : reset ? Number(reset) * 1000 : NaN;
-      const wait = Number.isFinite(at) && at > Date.now() && at <= 8640000000000000
-        ? `请在 ${new Date(at).toLocaleString()} 后重试。` : '请稍后重试，不要连续点击收集。';
-      const secondary = /secondary/i.test(body?.message ?? '') || (header('x-ratelimit-remaining') !== '0' && Boolean(retry));
-      throw new Error(`GitHub ${secondary ? '临时限流' : 'API 请求额度已用完'}。${wait}可在设置中配置或检查 GitHub Token。`);
-    }
-    if (response.status === 401) throw new Error('GitHub Token 无效或已过期，请在设置中更新或移除。');
-    if (response.status === 403) throw new Error('GitHub 拒绝访问（403），请检查 Token 权限或组织访问限制。');
-    if (response.status === 404) throw new Error('GitHub 资源不存在或无权访问（404），请检查仓库、分支或 Token 权限。');
-    throw new Error(`GitHub 请求失败（${response.status}）。`);
+    throw new Error(mapGitHubHttpError(response.status, { body, header, hasToken: Boolean(fetchImpl?.hasToken) }));
   }
   return response.json();
 }

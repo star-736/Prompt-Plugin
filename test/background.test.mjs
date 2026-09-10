@@ -59,6 +59,7 @@ test('collect and update send the configured token to every GitHub API request',
   globalThis.fetch = async (url, options) => { calls.push({ url, options }); return mock(url); };
   try {
     const collected = await handleRuntimeMessage({ type: 'collect-github-skill', tabId: 1, url: 'https://github.com/acme/demo/blob/main/skills/demo/SKILL.md' });
+    assert.equal(collected.hasToken, true);
     const firstCount = calls.length;
     assert.ok(firstCount >= 3);
     mock = skillFetch('b'.repeat(40));
@@ -153,6 +154,7 @@ test('collect and update GitHub skills, including unchanged updates', async () =
     url: stub.tabs[0].url
   });
   assert.equal(collected.duplicate, false);
+  assert.equal(collected.hasToken, false);
   assert.equal(collected.asset.title, 'Email reviewer');
   const again = await handleRuntimeMessage({ type: 'collect-github-skill', tabId: 1, url: stub.tabs[0].url });
   assert.equal(again.duplicate, true);

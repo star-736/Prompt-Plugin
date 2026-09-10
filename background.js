@@ -329,12 +329,13 @@ async function collectFromActiveTab(message = {}) {
     const [result] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: githubPageContext });
     injected = result?.result ?? {};
   } catch { /* 新 UI 或缺 meta 时改用 URL / API。 */ }
-  const packageRecord = await collectGitHubSkill(skillContextFromPage(inspection, injected), await githubFetch());
+  const fetchImpl = await githubFetch();
+  const packageRecord = await collectGitHubSkill(skillContextFromPage(inspection, injected), fetchImpl);
   const database = await loadDatabase();
   const saved = await commitGithubSkillPackage(database, packageRecord, { putPackage, deletePackage });
-  if (saved.duplicate) return { duplicate: true, asset: saved.asset };
+  if (saved.duplicate) return { duplicate: true, asset: saved.asset, hasToken: fetchImpl.hasToken };
   if (saved.queued) await scheduleAi();
-  return { duplicate: false, asset: saved.asset };
+  return { duplicate: false, asset: saved.asset, hasToken: fetchImpl.hasToken };
 }
 
 async function updateGitHubSkill(assetId) {
@@ -342,11 +343,12 @@ async function updateGitHubSkill(assetId) {
   if (isReadOnlyDatabase(database)) throw new Error(READ_ONLY_MESSAGE);
   const asset = database.assets.find((item) => item.id === assetId);
   if (!asset?.skillPackage?.source) throw new Error('这不是可更新的 GitHub Skill。');
-  const result = await checkGitHubSkillUpdate(asset.skillPackage.source, await githubFetch());
-  if (!result.changed) return { changed: false };
+  const fetchImpl = await githubFetch();
+  const result = await checkGitHubSkillUpdate(asset.skillPackage.source, fetchImpl);
+  if (!result.changed) return { changed: false, hasToken: fetchImpl.hasToken };
   const saved = await commitGithubSkillPackage(database, result.packageRecord, { updateAssetId: assetId, putPackage, deletePackage });
   if (saved.queued) await scheduleAi();
-  return { changed: true, asset: saved.asset };
+  return { changed: true, asset: saved.asset, hasToken: fetchImpl.hasToken };
 }
 
 export async function handleRuntimeMessage(message, sender = {}) {

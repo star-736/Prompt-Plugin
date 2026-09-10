@@ -131,6 +131,10 @@ function showToast(message) {
   toastTimer = setTimeout(() => toast.classList.remove('is-visible'), 2400);
 }
 
+function githubSuccessToast(base, hasToken) {
+  return `${base}（${hasToken ? '已使用 GitHub Token' : '当前为匿名额度'}）`;
+}
+
 async function sendBackground(message) {
   const response = await chrome.runtime.sendMessage(message);
   if (!response?.ok) throw new Error(response?.error || '后台操作失败。');
@@ -360,7 +364,7 @@ function renderSettings() {
   const inPlace = state.database.settings.inPlace;
   const usage = usageSummary(state.database);
   return `${renderReadOnlyBanner()}${pageHeading('设置', 'library')}<div class="settings-list">
-    <div class="setting-row setting-row-stack"><div><div class="setting-title">GitHub Token（可选）</div><div class="setting-description">${state.githubTokenConfigured ? '已配置，输入新 Token 可替换。' : '未配置，使用匿名请求额度。'}仅保存在此浏览器扩展的本地存储，不加密，不进入导出备份。收集公开仓库无需授予私有仓库或写入权限。</div></div><form id="github-token-form"><input id="github-token" type="password" autocomplete="new-password" aria-label="GitHub Token" placeholder="粘贴 GitHub Token" maxlength="512" required /><button class="button button-primary button-small" type="submit">保存 Token</button><button class="button button-ghost button-small" type="button" data-action="remove-github-token">移除 Token</button><div id="github-token-status" role="status"></div></form></div>
+    <div class="setting-row setting-row-stack"><div><div class="setting-title">GitHub Token（可选）</div><div class="setting-description">${state.githubTokenConfigured ? '已配置，输入新 Token 可替换。' : '未配置，使用匿名请求额度。'}用于提高公开仓库的 GitHub API 额度，并让失败原因更清楚。明文只存在此浏览器配置文件中，不写入备份，表单不回显；卸载或清除扩展数据会删除。能使用此配置文件的人可以读取。</div></div><form id="github-token-form"><input id="github-token" type="password" autocomplete="new-password" aria-label="GitHub Token" placeholder="粘贴 GitHub Token" maxlength="512" required /><button class="button button-primary button-small" type="submit">保存 Token</button><button class="button button-ghost button-small" type="button" data-action="remove-github-token">移除 Token</button><div id="github-token-status" role="status"></div></form></div>
     <div class="setting-row"><div><div class="setting-title">隐私锁</div><div class="setting-description">${lockStatus}。重设不会删除私密内容。</div></div><button class="button button-ghost button-small" type="button" data-action="reset-lock">${hasPrivacyLock(state.database) ? '重设隐私锁' : '设置隐私锁'}</button></div>
     <div class="setting-row setting-row-stack"><div><div class="setting-title">后台 AI 整理</div><div class="setting-description">${escapeHtml(status)}${current ? ` 当前 Provider：${escapeHtml(current.label)}。` : ' 还未配置 Provider。'}</div></div><div class="setting-actions"><label class="switch-label"><input id="ai-enabled" type="checkbox" ${ai.enabled ? 'checked' : ''} />开启</label><button class="button button-ghost button-small" type="button" data-action="manage-providers">Provider</button></div></div>
     <div class="setting-row setting-row-stack"><div><div class="setting-title">就地取用</div><div class="setting-description">在启用站点的输入框输入 // 或按 ${SHORTCUT_LABEL} 调出取用面板。已启用 ${inPlace.sites.length} 个站点。实际快捷键以 edge://extensions/shortcuts（Chrome 为 chrome://extensions/shortcuts）为准；被浏览器占用时可在那里改绑。</div></div><div class="setting-actions"><label class="switch-label"><input id="inplace-enabled" type="checkbox" ${inPlace.enabled ? 'checked' : ''} />开启</label><label class="switch-label"><input id="inplace-trigger" type="checkbox" ${inPlace.triggerEnabled ? 'checked' : ''} />// 触发符</label><button class="button button-ghost button-small" type="button" data-action="manage-sites">站点</button></div></div>
@@ -818,7 +822,7 @@ async function collectGitHubSkillFromPage() {
     if (!tabId) throw new Error('无法读取该文件页的仓库信息，请刷新后重试。');
     const result = await sendBackground({ type: 'collect-github-skill', tabId, url: tabUrl });
     state.database = await loadDatabase(); render();
-    showToast(result.duplicate ? '已是当前保存版本' : 'GitHub Skill 已保存');
+    showToast(githubSuccessToast(result.duplicate ? '已是当前保存版本' : 'GitHub Skill 已保存', result.hasToken));
   } catch (error) { showToast(error.message || '收集 GitHub Skill 失败。'); }
 }
 
@@ -826,8 +830,8 @@ async function updateGitHubSkill(id) {
   try {
     const result = await sendBackground({ type: 'update-github-skill', assetId: id });
     state.database = await loadDatabase();
-    if (result.changed) { state.packageRecord = await getPackage(result.asset.skillPackage.packageId); render(); showToast('已更新为 GitHub 最新版本'); }
-    else showToast('已是当前保存版本');
+    if (result.changed) { state.packageRecord = await getPackage(result.asset.skillPackage.packageId); render(); showToast(githubSuccessToast('已更新为 GitHub 最新版本', result.hasToken)); }
+    else showToast(githubSuccessToast('已是当前保存版本', result.hasToken));
   } catch (error) { showToast(error.message || '检查 GitHub 更新失败。'); }
 }
 
