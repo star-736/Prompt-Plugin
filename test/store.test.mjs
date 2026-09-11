@@ -93,6 +93,78 @@ test('asset validation accepts a title-less generic Prompt and preserves Skill v
   assert.throws(() => saveAsset(savedAigc.database, { type: 'skill', privacy: 'private', content: skill }), /只有 AIGC/);
 });
 
+test('terminal command assets are content-first, categorizable, searchable, and stay local', () => {
+  let database = createEmptyDatabase();
+  assert.equal(scopeFor('command'), 'command');
+  assert.throws(() => scopeFor('command', 'private'), /只有 AIGC/);
+
+  const cat = createCategory(database, 'command', 'AI Agent 更新');
+  database = cat.database;
+  assert.deepEqual(categoriesFor(database, 'command').map((c) => c.name), ['AI Agent 更新']);
+
+  const validated = validateAsset({ type: 'command', content: 'npm install -g @openai/codex@latest', categoryId: cat.category.id });
+  assert.equal(validated.type, 'command');
+  assert.equal(validated.categoryId, cat.category.id);
+  assert.throws(() => validateAsset({ type: 'command', content: '   ' }), /内容不能为空/);
+
+  const plain = saveAsset(database, { type: 'command', content: 'chrome://restart' }, { now: 1, id: 'cmd-plain' });
+  // Content-first: the command itself is the searchable identifier.
+  assert.equal(displayTitle(plain.asset), 'chrome://restart');
+  database = plain.database;
+
+  const withCat = saveAsset(database, { type: 'command', content: 'codex --dangerously-bypass-approvals-and-sandbox', categoryId: cat.category.id }, { now: 2, id: 'cmd-cat' });
+  database = withCat.database;
+  assert.equal(withCat.asset.categoryId, cat.category.id);
+  assert.equal(withCat.asset.categorySource, 'manual');
+  assert.equal(plain.asset.categorySource, 'none');
+
+  database = setAssetCategory(database, 'cmd-plain', cat.category.id, { now: 4 });
+  const recategorized = database.assets.find((asset) => asset.id === 'cmd-plain');
+  assert.equal(recategorized.categoryId, cat.category.id);
+  assert.equal(recategorized.categorySource, 'manual');
+  database = setAssetCategory(database, 'cmd-plain', null, { now: 5 });
+  assert.equal(database.assets.find((asset) => asset.id === 'cmd-plain').categoryId, null);
+  assert.equal(database.assets.find((asset) => asset.id === 'cmd-plain').categorySource, 'manual');
+  assert.throws(() => setAssetCategory(database, 'cmd-plain', 'no-such'), /找不到该分类/);
+
+  // Terminal commands never enter the AI queue even when background AI is enabled.
+  database = updateAiSettings(database, { enabled: true });
+  database = saveAsset(database, { id: 'cmd-cat', type: 'command', content: 'codex --dangerously-bypass-approvals-and-sandbox v2', categoryId: cat.category.id }, { now: 3 }).database;
+  assert.equal(database.ai.queue.length, 0);
+
+  const listed = assetsFor(database, { type: 'command' });
+  assert.deepEqual(listed.map((a) => a.id).sort(), ['cmd-cat', 'cmd-plain']);
+  const searched = assetsFor(database, { type: 'command', query: 'dangerously' });
+  assert.deepEqual(searched.map((a) => a.id), ['cmd-cat']);
+  const byCategory = assetsFor(database, { type: 'command', categoryId: cat.category.id });
+  assert.deepEqual(byCategory.map((a) => a.id), ['cmd-cat']);
+  assert.equal(paletteAssets(database, '', 8, { types: ['generic', 'skill'] }).some((asset) => asset.type === 'command'), false);
+});
+
+test('backup round-trips terminal commands and their categories, and re-import is idempotent', () => {
+  let db = createEmptyDatabase();
+  const cat = createCategory(db, 'command', 'AI Agent 更新');
+  db = cat.database;
+  db = saveAsset(db, { type: 'command', content: 'npm i -g @openai/codex@latest', categoryId: cat.category.id }, { id: 'c1', now: 1 }).database;
+  db = saveAsset(db, { type: 'command', content: 'chrome://restart' }, { id: 'c2', now: 2 }).database;
+
+  const backup = createBackup(db);
+  let ids = 0;
+  const idFactory = () => `imp-${++ids}`;
+  let restored = mergeBackup(createEmptyDatabase(), backup, { now: 5, idFactory });
+  assert.equal(restored.imported, 2);
+  const restoredCommands = assetsFor(restored.database, { type: 'command' });
+  assert.deepEqual(restoredCommands.map((a) => a.content).sort(), ['chrome://restart', 'npm i -g @openai/codex@latest']);
+  const restoredCats = categoriesFor(restored.database, 'command');
+  assert.deepEqual(restoredCats.map((c) => c.name), ['AI Agent 更新']);
+  assert.equal(restoredCommands.find((a) => a.content.includes('codex')).categoryId, restoredCats[0].id);
+
+  const reimport = mergeBackup(restored.database, backup, { now: 6, idFactory });
+  assert.equal(reimport.imported, 0);
+  assert.equal(reimport.skipped, 2);
+  assert.equal(assetsFor(reimport.database, { type: 'command' }).length, 2);
+});
+
 test('formatSkillInsert prefixes skill payloads only and does not mutate saved assets', () => {
   assert.equal(formatSkillInsert(skill, 'skill'), `${SKILL_INSERT_PREFIX}\n${skill}`);
   assert.equal(formatSkillInsert(skill, 'generic'), skill);

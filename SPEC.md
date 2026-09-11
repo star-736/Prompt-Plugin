@@ -89,3 +89,5 @@ Skill 仅支持带 YAML frontmatter 的单个 `SKILL.md`，保存时校验 `name
 - 支持包式 Skill 及其资源。
 - 用户选择的 LLM 生成标题、分类或标签建议；一期不向网络发送资产内容。
 - 加密备份与其他需要额外密码的隐私能力。
+
+后续增量见 [二期规格](./SPEC_PHASE2.md)、[三期规格](./SPEC_PHASE3.md) 与 [四期规格](./SPEC_PHASE4.md)。四期新增终端指令作为第四类普通库资产。
