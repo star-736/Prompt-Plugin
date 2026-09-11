@@ -129,6 +129,30 @@ test('terminal command assets are content-first, categorizable, searchable, and 
   assert.deepEqual(byCategory.map((a) => a.id), ['cmd-cat']);
 });
 
+test('backup round-trips terminal commands and their categories, and re-import is idempotent', () => {
+  let db = createEmptyDatabase();
+  const cat = createCategory(db, 'command', 'AI Agent 更新');
+  db = cat.database;
+  db = saveAsset(db, { type: 'command', content: 'npm i -g @openai/codex@latest', categoryId: cat.category.id }, { id: 'c1', now: 1 }).database;
+  db = saveAsset(db, { type: 'command', content: 'chrome://restart' }, { id: 'c2', now: 2 }).database;
+
+  const backup = createBackup(db);
+  let ids = 0;
+  const idFactory = () => `imp-${++ids}`;
+  let restored = mergeBackup(createEmptyDatabase(), backup, { now: 5, idFactory });
+  assert.equal(restored.imported, 2);
+  const restoredCommands = assetsFor(restored.database, { type: 'command' });
+  assert.deepEqual(restoredCommands.map((a) => a.content).sort(), ['chrome://restart', 'npm i -g @openai/codex@latest']);
+  const restoredCats = categoriesFor(restored.database, 'command');
+  assert.deepEqual(restoredCats.map((c) => c.name), ['AI Agent 更新']);
+  assert.equal(restoredCommands.find((a) => a.content.includes('codex')).categoryId, restoredCats[0].id);
+
+  const reimport = mergeBackup(restored.database, backup, { now: 6, idFactory });
+  assert.equal(reimport.imported, 0);
+  assert.equal(reimport.skipped, 2);
+  assert.equal(assetsFor(reimport.database, { type: 'command' }).length, 2);
+});
+
 test('formatSkillInsert prefixes skill payloads only and does not mutate saved assets', () => {
   assert.equal(formatSkillInsert(skill, 'skill'), `${SKILL_INSERT_PREFIX}\n${skill}`);
   assert.equal(formatSkillInsert(skill, 'generic'), skill);
