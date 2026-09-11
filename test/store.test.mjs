@@ -93,7 +93,7 @@ test('asset validation accepts a title-less generic Prompt and preserves Skill v
   assert.throws(() => saveAsset(savedAigc.database, { type: 'skill', privacy: 'private', content: skill }), /只有 AIGC/);
 });
 
-test('terminal command assets support optional title, categories, search, and stay local', () => {
+test('terminal command assets are content-first, categorizable, searchable, and stay local', () => {
   let database = createEmptyDatabase();
   assert.equal(scopeFor('command'), 'command');
   assert.throws(() => scopeFor('command', 'private'), /只有 AIGC/);
@@ -102,31 +102,31 @@ test('terminal command assets support optional title, categories, search, and st
   database = cat.database;
   assert.deepEqual(categoriesFor(database, 'command').map((c) => c.name), ['AI Agent 更新']);
 
-  const validated = validateAsset({ type: 'command', title: '', content: 'npm install -g @openai/codex@latest', categoryId: cat.category.id });
+  const validated = validateAsset({ type: 'command', content: 'npm install -g @openai/codex@latest', categoryId: cat.category.id });
   assert.equal(validated.type, 'command');
   assert.equal(validated.categoryId, cat.category.id);
+  assert.throws(() => validateAsset({ type: 'command', content: '   ' }), /内容不能为空/);
 
-  const untitled = saveAsset(database, { type: 'command', title: '', content: 'chrome://restart' }, { now: 1, id: 'cmd-untitled' });
-  assert.equal(displayTitle(untitled.asset), 'chrome://restart');
-  assert.equal(displayTitle({ type: 'command', title: '', content: '' }), '未命名指令');
-  database = untitled.database;
+  const plain = saveAsset(database, { type: 'command', content: 'chrome://restart' }, { now: 1, id: 'cmd-plain' });
+  // Content-first: the command itself is the searchable identifier.
+  assert.equal(displayTitle(plain.asset), 'chrome://restart');
+  database = plain.database;
 
-  const titled = saveAsset(database, { type: 'command', title: 'codex 免确认', content: 'codex --dangerously-bypass-approvals-and-sandbox', categoryId: cat.category.id }, { now: 2, id: 'cmd-titled' });
-  database = titled.database;
-  assert.equal(titled.asset.title, 'codex 免确认');
-  assert.equal(titled.asset.categoryId, cat.category.id);
+  const withCat = saveAsset(database, { type: 'command', content: 'codex --dangerously-bypass-approvals-and-sandbox', categoryId: cat.category.id }, { now: 2, id: 'cmd-cat' });
+  database = withCat.database;
+  assert.equal(withCat.asset.categoryId, cat.category.id);
 
   // Terminal commands never enter the AI queue even when background AI is enabled.
   database = updateAiSettings(database, { enabled: true });
-  database = saveAsset(database, { id: 'cmd-titled', type: 'command', title: 'codex 免确认', content: 'codex --dangerously-bypass-approvals-and-sandbox v2', categoryId: cat.category.id }, { now: 3 }).database;
+  database = saveAsset(database, { id: 'cmd-cat', type: 'command', content: 'codex --dangerously-bypass-approvals-and-sandbox v2', categoryId: cat.category.id }, { now: 3 }).database;
   assert.equal(database.ai.queue.length, 0);
 
   const listed = assetsFor(database, { type: 'command' });
-  assert.deepEqual(listed.map((a) => a.id).sort(), ['cmd-titled', 'cmd-untitled']);
+  assert.deepEqual(listed.map((a) => a.id).sort(), ['cmd-cat', 'cmd-plain']);
   const searched = assetsFor(database, { type: 'command', query: 'dangerously' });
-  assert.deepEqual(searched.map((a) => a.id), ['cmd-titled']);
+  assert.deepEqual(searched.map((a) => a.id), ['cmd-cat']);
   const byCategory = assetsFor(database, { type: 'command', categoryId: cat.category.id });
-  assert.deepEqual(byCategory.map((a) => a.id), ['cmd-titled']);
+  assert.deepEqual(byCategory.map((a) => a.id), ['cmd-cat']);
 });
 
 test('formatSkillInsert prefixes skill payloads only and does not mutate saved assets', () => {

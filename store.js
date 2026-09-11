@@ -142,7 +142,7 @@ export function parseSkillMetadata(content) {
 export function displayTitle(asset) {
   if (asset.type !== 'aigc' && asset.title?.trim()) return asset.title.trim();
   const first = String(asset.content ?? '').split(/\r?\n/).find((line) => line.trim())?.trim() ?? '';
-  const fallback = asset.type === 'aigc' ? '未命名 AIGC Prompt' : asset.type === 'command' ? '未命名指令' : '未命名 Prompt';
+  const fallback = asset.type === 'aigc' ? '未命名 AIGC Prompt' : '未命名 Prompt';
   return first.length > 32 ? `${first.slice(0, 32)}…` : first || fallback;
 }
 

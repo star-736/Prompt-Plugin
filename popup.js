@@ -285,7 +285,7 @@ function renderAssetList() {
   if (!assets.length) return `<div class="empty-state"><p>暂无${escapeHtml(emptyName())}</p><div class="empty-actions"><button class="button button-primary" type="button" data-action="new-asset">新建${escapeHtml(emptyName())}</button>${githubCollect}</div></div>`;
   return `<ul class="asset-list">${assets.map((asset) => `<li class="asset-row">
     <button class="asset-open" type="button" data-action="open-asset" data-id="${asset.id}">
-      ${asset.type === 'aigc' ? `<span class="asset-aigc-content">${escapeHtml(asset.content)}</span>` : `<span class="asset-title">${escapeHtml(displayTitle(asset))}</span><span class="asset-preview">${escapeHtml(previewFor(asset))}</span>${asset.privacy === 'normal' ? `<span class="asset-meta"><span class="category-badge">${escapeHtml(categoryName(asset.categoryId))}</span></span>` : ''}`}
+      ${asset.type === 'aigc' ? `<span class="asset-aigc-content">${escapeHtml(asset.content)}</span>` : asset.type === 'command' ? `<span class="asset-command-content">${escapeHtml(asset.content)}</span><span class="asset-meta"><span class="category-badge">${escapeHtml(categoryName(asset.categoryId))}</span></span>` : `<span class="asset-title">${escapeHtml(displayTitle(asset))}</span><span class="asset-preview">${escapeHtml(previewFor(asset))}</span>${asset.privacy === 'normal' ? `<span class="asset-meta"><span class="category-badge">${escapeHtml(categoryName(asset.categoryId))}</span></span>` : ''}`}
     </button>
     <div class="asset-actions">${pinBtn(asset)}<button class="button button-ghost button-small copy-button" type="button" data-action="copy-asset" data-id="${asset.id}">复制</button><button class="button button-ghost button-small" type="button" data-action="delete-asset" data-id="${asset.id}">删除</button></div>
   </li>`).join('')}</ul>${githubCollect ? `<div class="library-secondary-action">${githubCollect}</div>` : ''}`;
@@ -347,7 +347,7 @@ function renderEditor() {
   const isSkill = type === 'skill';
   const isCommand = type === 'command';
   const heading = existing ? `编辑${labels[type]}` : `新建${labels[type]}`;
-  const titleField = ['generic', 'command'].includes(type) ? '<div class="field"><label>标题（可选）<input id="editor-title-input" maxlength="120" value="' + escapeHtml(values.title) + '" /></label></div>' : '';
+  const titleField = type === 'generic' ? '<div class="field"><label>标题（可选）<input id="editor-title-input" maxlength="120" value="' + escapeHtml(values.title) + '" /></label></div>' : '';
   const contentLabel = isSkill ? 'SKILL.md' : isCommand ? '命令' : '内容';
   const contentHelp = isSkill ? '<p class="form-help">保存时会校验 YAML frontmatter 中的 name 与 description。</p>' : '';
   const management = existing?.type === 'aigc' ? `<div class="secondary-management">
@@ -498,7 +498,7 @@ function openEditor(asset = null) {
   const reference = { type, privacy, id: asset?.id ?? null };
   const draft = getDraft(state.database, reference);
   const baseline = asset
-    ? { title: ['generic', 'command'].includes(asset.type) ? asset.title : '', content: asset.content, categoryId: ['generic', 'skill', 'command'].includes(asset.type) ? asset.categoryId : null }
+    ? { title: asset.type === 'generic' ? asset.title : '', content: asset.content, categoryId: ['generic', 'skill', 'command'].includes(asset.type) ? asset.categoryId : null }
     : { title: '', content: '', categoryId: ['generic', 'skill', 'command'].includes(type) && privacy !== 'private' ? state.categoryId : null };
   const values = draft ? { title: draft.title ?? '', content: draft.content ?? '', categoryId: draft.categoryId ?? null } : baseline;
   state.editor = { type, privacy, assetId: asset?.id ?? null, reference, baseline, values };

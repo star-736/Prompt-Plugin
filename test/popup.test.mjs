@@ -200,19 +200,18 @@ test('editor save, category create, and back', async () => {
   await waitFor(() => /已保存/.test(toastText()) || document.querySelector('.asset-list'));
 });
 
-test('terminal command tab: create, categorize, list, and copy', async () => {
+test('terminal command tab: content-first create, categorize, list, and copy', async () => {
   click('[data-tab="command"]');
   await waitFor(() => document.querySelector('[data-tab="command"].is-active'));
   assert.match(document.querySelector('#app').innerHTML, /暂无终端指令/);
 
   click('[data-action="new-asset"]');
   await waitFor(() => document.querySelector('#editor-form'));
-  // Terminal commands have an optional title field and a category selector.
-  assert.ok(document.querySelector('#editor-title-input'));
+  // Terminal commands are content-first: no title field, just a category and the command body.
+  assert.equal(document.querySelector('#editor-title-input'), null);
   assert.ok(document.querySelector('#editor-category'));
   assert.match(document.querySelector('.editor-form').innerHTML, /命令/);
 
-  document.querySelector('#editor-title-input').value = 'codex 免确认';
   document.querySelector('#editor-content').value = 'codex --dangerously-bypass-approvals-and-sandbox';
   document.querySelector('#editor-content').dispatchEvent(new window.Event('input', { bubbles: true }));
   await flush(20);
@@ -224,7 +223,8 @@ test('terminal command tab: create, categorize, list, and copy', async () => {
   document.querySelector('#editor-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
 
   await waitFor(() => document.querySelector('[data-action="open-asset"]'));
-  assert.match(document.querySelector('.asset-list').innerHTML, /codex 免确认/);
+  // The command body is shown directly (content-first), with its category badge.
+  assert.match(document.querySelector('.asset-command-content').textContent, /codex --dangerously-bypass-approvals-and-sandbox/);
   assert.match(document.querySelector('.asset-list').innerHTML, /AI Agent/);
   click('[data-action="copy-asset"]');
   await waitFor(() => /复制/.test(toastText()));
