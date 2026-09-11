@@ -164,7 +164,7 @@ export function validateAsset(input) {
   return { type, privacy, title: type === 'skill' ? metadata.name : normalizedName(input.title), content, categoryId: type === 'aigc' || privacy === 'private' ? null : input.categoryId || null, skillDescription: metadata?.description ?? null };
 }
 function titleSource(existing, asset) { if (asset.type !== 'generic') return null; if (!existing) return asset.title ? 'manual' : 'none'; return asset.title === existing.title ? (existing.titleSource ?? (asset.title ? 'manual' : 'none')) : (asset.title ? 'manual' : 'none'); }
-function categorySource(existing, asset) { if (!['generic', 'skill'].includes(asset.type)) return null; if (!existing) return asset.categoryId ? 'manual' : 'none'; return asset.categoryId === existing.categoryId ? (existing.categorySource ?? (asset.categoryId ? 'manual' : 'none')) : (asset.categoryId ? 'manual' : 'none'); }
+function categorySource(existing, asset) { if (!['generic', 'skill', 'command'].includes(asset.type)) return null; if (!existing) return asset.categoryId ? 'manual' : 'none'; return asset.categoryId === existing.categoryId ? (existing.categorySource ?? (asset.categoryId ? 'manual' : 'none')) : (asset.categoryId ? 'manual' : 'none'); }
 function materiallyChanged(existing, asset) { return !existing || String(existing.content).trim() !== String(asset.content).trim(); }
 function enqueueIfEligible(next, existing, asset, now) {
   if (!next.ai.enabled || !['generic', 'skill'].includes(asset.type) || !materiallyChanged(existing, asset)) return;
@@ -253,7 +253,7 @@ export function setAssetPinned(database, id, pinned) {
 export function setAssetCategory(database, id, categoryId, { now = Date.now() } = {}) {
   const next = normalizeDatabase(clone(database)); const index = next.assets.findIndex((asset) => asset.id === id); if (index < 0) throw new Error('找不到该条目。');
   const asset = next.assets[index];
-  if (!['generic', 'skill'].includes(asset.type) || asset.privacy !== 'normal') throw new Error('只有普通库的 Prompt 和 Skill 可以分类。');
+  if (!['generic', 'skill', 'command'].includes(asset.type) || asset.privacy !== 'normal') throw new Error('只有普通库的 Prompt、Skill 和终端指令可以分类。');
   const nextCategoryId = categoryId || null;
   if (nextCategoryId && !next.categories.some((category) => category.id === nextCategoryId && category.scope === asset.type)) throw new Error('找不到该分类。');
   next.assets[index] = { ...asset, categoryId: nextCategoryId, categorySource: 'manual', updatedAt: now };
@@ -264,7 +264,7 @@ export function usageSummary(database, now = Date.now()) {
   return { week: within(7), month: within(30), total: database.assets.reduce((sum, asset) => sum + (asset.useCount ?? 0), 0), sites: database.settings?.inPlace?.sites?.length ?? 0 };
 }
 
-// 取用面板：搜索普通库；私密库永不出现。types 缺省时三种都出。
+// 取用面板：搜索普通库；私密库永不出现。types 缺省时全部普通库类型都会出现（含终端指令）；生产路径显式传入 types，不含 command。
 export function paletteAssets(database, query = '', limit = 8, { types } = {}) {
   const needle = String(query ?? '').trim().replace(/\s+/g, ' ').toLocaleLowerCase(); const names = categoryNameMap(database);
   const allowed = Array.isArray(types) ? new Set(types.filter((type) => ASSET_TYPES.includes(type))) : null;

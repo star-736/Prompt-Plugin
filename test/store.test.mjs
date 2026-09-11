@@ -115,6 +115,17 @@ test('terminal command assets are content-first, categorizable, searchable, and 
   const withCat = saveAsset(database, { type: 'command', content: 'codex --dangerously-bypass-approvals-and-sandbox', categoryId: cat.category.id }, { now: 2, id: 'cmd-cat' });
   database = withCat.database;
   assert.equal(withCat.asset.categoryId, cat.category.id);
+  assert.equal(withCat.asset.categorySource, 'manual');
+  assert.equal(plain.asset.categorySource, 'none');
+
+  database = setAssetCategory(database, 'cmd-plain', cat.category.id, { now: 4 });
+  const recategorized = database.assets.find((asset) => asset.id === 'cmd-plain');
+  assert.equal(recategorized.categoryId, cat.category.id);
+  assert.equal(recategorized.categorySource, 'manual');
+  database = setAssetCategory(database, 'cmd-plain', null, { now: 5 });
+  assert.equal(database.assets.find((asset) => asset.id === 'cmd-plain').categoryId, null);
+  assert.equal(database.assets.find((asset) => asset.id === 'cmd-plain').categorySource, 'manual');
+  assert.throws(() => setAssetCategory(database, 'cmd-plain', 'no-such'), /找不到该分类/);
 
   // Terminal commands never enter the AI queue even when background AI is enabled.
   database = updateAiSettings(database, { enabled: true });
@@ -127,6 +138,7 @@ test('terminal command assets are content-first, categorizable, searchable, and 
   assert.deepEqual(searched.map((a) => a.id), ['cmd-cat']);
   const byCategory = assetsFor(database, { type: 'command', categoryId: cat.category.id });
   assert.deepEqual(byCategory.map((a) => a.id), ['cmd-cat']);
+  assert.equal(paletteAssets(database, '', 8, { types: ['generic', 'skill'] }).some((asset) => asset.type === 'command'), false);
 });
 
 test('backup round-trips terminal commands and their categories, and re-import is idempotent', () => {

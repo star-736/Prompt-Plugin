@@ -2,11 +2,11 @@
 
 生效日期：2026 年 8 月 15 日
 
-FutureContext 是一个本地优先的浏览器扩展，用于保存、分类、编辑和复制通用 Prompt、Skill 和 AIGC Prompt。
+FutureContext 是一个本地优先的浏览器扩展，用于保存、分类、编辑和复制通用 Prompt、Skill、AIGC Prompt 和终端指令。
 
 ## 我们处理的数据
 
-FutureContext 会在你的当前浏览器配置文件中保存你主动输入、保存或收集的内容，包括 Prompt、Skill 文本与资源、标题、分类、编辑草稿、私密库内容，以及用于私密库访问锁的本地验证信息。GitHub 收集的 Skill 包资源保存在浏览器的本地 IndexedDB 中。
+FutureContext 会在你的当前浏览器配置文件中保存你主动输入、保存或收集的内容，包括 Prompt、Skill 文本与资源、终端指令、标题、分类、编辑草稿、私密库内容，以及用于私密库访问锁的本地验证信息。GitHub 收集的 Skill 包资源保存在浏览器的本地 IndexedDB 中。
 
 当你选择导出时，扩展会在你的设备上生成一份 JSON 备份文件。备份文件可能包含私密库内容。
 
@@ -14,7 +14,7 @@ FutureContext 会在你的当前浏览器配置文件中保存你主动输入、
 
 这些数据仅用于在扩展中显示、搜索、分类、编辑、复制、导入和导出你的内容。FutureContext 没有账号系统、自己的服务器、云同步、分析工具或广告 SDK。
 
-当你主动配置并开启后台 AI 整理时，FutureContext 会把新保存或实质编辑后保存的**通用 Prompt 与 Skill**及相关分类名称发送给你选择的 Provider（OpenAI、OpenCode Go、DeepSeek、OpenRouter 或你设置的兼容服务），用于生成标题和分类建议。AIGC Prompt、私密 AIGC Prompt 和未保存草稿永不发送。开启后台 AI 不会自动回扫历史内容；历史内容只有在你主动点击“整理现有内容”后才会发送。
+当你主动配置并开启后台 AI 整理时，FutureContext 会把新保存或实质编辑后保存的**通用 Prompt 与 Skill**及相关分类名称发送给你选择的 Provider（OpenAI、OpenCode Go、DeepSeek、OpenRouter 或你设置的兼容服务），用于生成标题和分类建议。AIGC Prompt、私密 AIGC Prompt、终端指令和未保存草稿永不发送。开启后台 AI 不会自动回扫历史内容；历史内容只有在你主动点击“整理现有内容”后才会发送。
 
 当你主动从公开 GitHub 的具体 `SKILL.md` 页面收集时，FutureContext 会访问 GitHub 页面和 API，读取该文件所在目录的内容并保存到本地。它不会执行包内脚本，也不会把该包上传到其他 AI 平台。上述 Provider 和 GitHub 权限均在你配置或收集时按站点请求，不会默认读取所有网页。
 

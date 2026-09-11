@@ -36,7 +36,7 @@
 - 使用 `//` 而不是单个 `/`，避免与 ChatGPT、Claude 等站点自带的斜杠菜单冲突。用户可在设置中关闭触发符，仅保留快捷键。
 - 面板列出最多 8 条结果，每条显示：类型标记（通用 / Skill / AIGC）、标题（或正文摘要）、一行内容摘要、置顶标记。
 - 排序：置顶优先 → 标题匹配优先于正文匹配 → 取用次数降序 → 最近编辑降序。搜索词为空时按置顶、取用次数、最近编辑排序。
-- 搜索范围按当前页面 URL 过滤类型：聊天页（含 ChatGPT / Claude / Gemini / DeepSeek / Kimi / Grok 聊天页，以及用户手动启用的其它站）只搜通用 Prompt 与 Skill，不含 AIGC；`grok.com/imagine`（含子路径）仅搜普通 AIGC Prompt。私密 AIGC 永不出现。搜索匹配标题、正文与分类名，忽略大小写和多余空白。
+- 搜索范围按当前页面 URL 过滤类型：聊天页（含 ChatGPT / Claude / Gemini / DeepSeek / Kimi / Grok 聊天页，以及用户手动启用的其它站）只搜通用 Prompt 与 Skill，不含 AIGC 与终端指令；`grok.com/imagine`（含子路径）仅搜普通 AIGC Prompt。私密 AIGC 与终端指令永不出现。搜索匹配标题、正文与分类名，忽略大小写和多余空白。
 - 匹配必须看 path，不能只看 origin：`https://grok.com/` 与 `https://grok.com/imagine` 同源，前者不含 AIGC、后者仅 AIGC。
 - 键盘：↑↓ 切换、Enter 或 Tab 插入、Esc 关闭并保留已输入的 `//` 文本。鼠标点击结果同样插入。
 - 插入时删除用户输入的 `//` 与搜索词，把资产的完整内容写入光标处；Skill 插入完整 `SKILL.md` 原文。插入后光标落在内容末尾，不自动发送。
@@ -71,7 +71,7 @@
 
 ### 常用排序
 
-- 通用 Prompt、Skill 与普通 AIGC 列表的工具区，在搜索框和 `全部分类 ▾` 之间加入 `最近编辑 ▾` 排序切换，可选：最近编辑、最近取用、最常取用。
+- 通用 Prompt、Skill、普通 AIGC 与终端指令列表的工具区，在搜索框和 `全部分类 ▾` 之间加入 `最近编辑 ▾` 排序切换，可选：最近编辑、最近取用、最常取用。
 - 选择按页签记住，存于 `settings.sortBy[tab]`；默认最近编辑。
 - 最近取用：`lastUsedAt` 降序，从未取用的条目按 `updatedAt` 降序排在后面。最常取用：`useCount` 降序，相同则按 `lastUsedAt` 降序。
 - 私密库列表不提供排序切换，仍按最近编辑。
