@@ -27,7 +27,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .app-content { min-height: 500px; }
 .tabs { border-bottom: 1px solid #e2e7ef; display: flex; gap: 18px; margin: 0 -2px 15px; }
 .tab { background: transparent; border: 0; border-bottom: 2px solid transparent; color: #758091; font-size: 13px; font-weight: 640; padding: 8px 2px 10px; }
-.tab:hover { color: #3b536f; }.tab.is-active { border-color: #6e91ba; color: #2b4059; }
+.tab:hover { color: #3b536f; }.tab.is-active { border-color: #6e91ba; color: #2b4059; }.tab[data-tab="command"]:hover { color: #2f7d4f; }.tab[data-tab="command"].is-active { border-color: #3a9a63; color: #2f7d4f; }
 .subtabs { display: flex; gap: 6px; margin-bottom: 14px; }
 .subtab { background: #f0f3f7; border: 1px solid transparent; border-radius: 8px; color: #697587; font-size: 12px; font-weight: 650; padding: 6px 10px; }
 .subtab.is-active { background: #e6eef9; border-color: #d5e1f0; color: #41658e; }.private-tab { color: #746d88; }.private-tab.is-active { background: #f0ebf8; border-color: #dfd7ef; color: #716185; }
