@@ -23,7 +23,7 @@ Token 明文只存在此浏览器配置文件的扩展存储中，不写入资�
 
 - 工具栏弹窗内完成四类资产的搜索、一级分类、编辑、复制与永久删除。
 - 终端指令用于收集各类 CLI / AI Agent 命令、更新指令、快捷键速查等；内容优先、无需标题，支持一级分类与搜索，正文以等宽字体展示，复制即为原始命令。它只保存在本地，永不发送给 AI Provider。
-- Skill 可直接编辑带 YAML frontmatter 的 `SKILL.md`，也可从公开 GitHub 的具体 `SKILL.md` 页面收集同目录完整包；包内脚本仅保存、绝不执行。
+- Skill 可直接编辑带 YAML frontmatter 的 `SKILL.md`，也可从公开 GitHub 的具体 `SKILL.md` 页面收集同目录完整包；包内脚本仅保存、绝不执行。收集默认不写入任何 Agent 目录；可在详情页按条投递到 Claude / Cursor / Codex / Hermes Agent 等 skills 文件夹，并随时撤回（只删带标记的副本，库内收藏保留）。绑定目录后按 YAML name 对照磁盘：外来同名 Skill 显示为“目录里已有”；SKILL.md 不同则可更新本地，撤回不会动它。
 - 通用 Prompt 标题可选；配置后台 AI 后可无感补全标题和归入分类。AIGC Prompt 与终端指令永不发送给 AI Provider。
 - 支持 OpenAI、OpenCode Go、DeepSeek、OpenRouter 和自定义 OpenAI 兼容 Provider；API Key 由私密库密码加密保存，并只在当前浏览器会话解锁后供后台使用。
 - AIGC Prompt 可在普通库和私密库之间明确迁移。

@@ -8,10 +8,13 @@ import {
   saveAsset,
   saveGithubSkillAsset,
   setPrivacyPassword,
+  setSkillDeliveryTarget,
   updateAiSettings,
   updateInPlaceSettings
 } from '../store.js';
-import { click, confirmOpenDialog, createChromeStub, createMemoryIndexedDB, flush, installDom, loadFreshEntry, popupHtml, seedDatabase, waitFor } from './helpers.mjs';
+import { createDeliveryMarker } from '../agent-deliver.js';
+import { putBinding } from '../agent-folders.js';
+import { click, confirmOpenDialog, createChromeStub, createMemoryDirectory, createMemoryIndexedDB, flush, installDom, loadFreshEntry, popupHtml, seedDatabase, waitFor, writeMemoryFile } from './helpers.mjs';
 
 const skill = `---\nname: Email reviewer\ndescription: Review email drafts\n---\n\n# Instructions\nReview the email.`;
 
@@ -75,8 +78,63 @@ database = updateAiSettings(database, {
 });
 database = withSites(database, []);
 if (t.name.includes('read-only')) database.version = 999;
+if (t.name.includes('stale delivered skill')) {
+  database = setSkillDeliveryTarget(database, 's1', 'claude', { slug: 'Email-reviewer', deliveredAt: 6, contentUpdatedAt: 1 });
+} else if (t.name.includes('delivered skill')) {
+  database = setSkillDeliveryTarget(database, 's1', 'claude', { slug: 'Email-reviewer', deliveredAt: 6, contentUpdatedAt: 2 });
+}
 if (t.name.includes('activating another provider')) {
   database.ai.providers.push({ ...database.ai.providers[0], id: 'p2', label: 'Second provider' });
+}
+if (t.name.includes('present on disk')) {
+  const root = createMemoryDirectory();
+  const skillDir = await root.getDirectoryHandle('Email-reviewer', { create: true });
+  await writeMemoryFile(skillDir, 'SKILL.md', skill);
+  await putBinding({ id: 'cursor', handle: root, displayName: 'skills' }, indexedDb);
+}
+if (t.name.includes('shared agents directory')) {
+  const agents = createMemoryDirectory();
+  const skillDir = await agents.getDirectoryHandle('Email-reviewer', { create: true });
+  await writeMemoryFile(skillDir, 'SKILL.md', skill);
+  await putBinding({ id: 'agents', handle: agents, displayName: 'skills' }, indexedDb);
+  await putBinding({ id: 'cursor', handle: createMemoryDirectory(), displayName: 'skills' }, indexedDb);
+}
+if (t.name.includes('outdated on disk')) {
+  const root = createMemoryDirectory();
+  const skillDir = await root.getDirectoryHandle('Email-reviewer', { create: true });
+  await writeMemoryFile(skillDir, 'SKILL.md', '---\nname: Email reviewer\ndescription: old copy\n---\nold');
+  await putBinding({ id: 'cursor', handle: root, displayName: 'skills' }, indexedDb);
+}
+if (t.name.includes('scan recovers marked')) {
+  const root = createMemoryDirectory();
+  const skillDir = await root.getDirectoryHandle('Email-reviewer', { create: true });
+  await writeMemoryFile(skillDir, 'SKILL.md', skill);
+  await writeMemoryFile(skillDir, '.futurecontext-delivery.json', JSON.stringify(createDeliveryMarker({ id: 's1', updatedAt: 2 }, 'cursor', 'Email-reviewer', 8)));
+  await putBinding({ id: 'cursor', handle: root, displayName: 'skills' }, indexedDb);
+}
+if (t.name.includes('bound empty')) {
+  await putBinding({ id: 'claude', handle: createMemoryDirectory(), displayName: 'skills' }, indexedDb);
+}
+if (t.name.includes('do not open the directory picker')) {
+  globalThis.__pickerCalls = 0;
+  globalThis.__permissionPrompts = 0;
+  globalThis.showDirectoryPicker = async () => {
+    globalThis.__pickerCalls += 1;
+    return createMemoryDirectory();
+  };
+  const denied = createMemoryDirectory();
+  denied.queryPermission = async () => 'prompt';
+  denied.requestPermission = async () => {
+    globalThis.__permissionPrompts += 1;
+    return 'prompt';
+  };
+  await putBinding({ id: 'claude', handle: denied, displayName: 'skills' }, indexedDb);
+} else {
+  globalThis.__pickerCalls = 0;
+  globalThis.showDirectoryPicker = async () => {
+    globalThis.__pickerCalls += 1;
+    return createMemoryDirectory();
+  };
 }
 seedDatabase(stub.local, database);
 
@@ -93,7 +151,12 @@ await import('../package-store.js').then(({ putPackage }) => putPackage({
 await loadFreshEntry('../popup.js');
 await waitFor(() => document.querySelector('.tabs'));
 });
-afterEach(() => window.close());
+afterEach(() => {
+  delete globalThis.showDirectoryPicker;
+  delete globalThis.__pickerCalls;
+  delete globalThis.__permissionPrompts;
+  window.close();
+});
 
 function addProposal(db) {
   const next = structuredClone(db);
@@ -180,6 +243,161 @@ test('search, sort, category filter, pin, and copy', async () => {
   await waitFor(() => /已置顶|已取消置顶/.test(toastText()));
   click('[data-action="copy-asset"]');
   await waitFor(() => /复制/.test(toastText()));
+});
+
+test('saved skill asks to choose a folder instead of pretending it needs delivery', async () => {
+  click('[data-tab="skill"]');
+  await waitFor(() => document.querySelector('[data-id="s1"]'));
+  click('[data-action="open-asset"][data-id="s1"]');
+  await waitFor(() => document.querySelector('#editor-form'));
+  assert.match(document.querySelector('#app').textContent, /投递到 Agent/);
+  assert.match(document.querySelector('#app').textContent, /默认只收藏/);
+  assert.equal(document.querySelector('details.skill-delivery')?.open, true);
+  assert.match(document.querySelector('#app').textContent, /请先在设置中绑定/);
+  assert.match(document.querySelector('#app').textContent, /未选择目录，请先在设置中绑定/);
+  assert.equal(document.querySelector('[data-action="deliver-skill"][data-target="claude"]'), null);
+  assert.equal(document.querySelector('[data-action="bind-agent-folder"]'), null);
+  click('[data-action="open-agent-settings"]');
+  await waitFor(() => document.querySelector('#agent-folder-list'));
+  assert.match(document.querySelector('#app').textContent, /Agent 目录/);
+  assert.match(document.querySelector('#app').textContent, /地址栏|Command\+Shift\+G/);
+  assert.equal(document.querySelector('[data-action="bind-agent-folder"][data-target="claude"]')?.textContent, '选择目录');
+});
+
+test('bound empty directory still offers deliver', async () => {
+  click('[data-tab="skill"]');
+  await waitFor(() => document.querySelector('[data-id="s1"]'));
+  click('[data-action="open-asset"][data-id="s1"]');
+  await waitFor(() => document.querySelector('[data-action="deliver-skill"][data-target="claude"]'));
+  assert.match(document.querySelector('#app').textContent, /本地没有找到这份 Skill/);
+  window.dispatchEvent(new window.Event('focus'));
+  await flush(20);
+  assert.match(document.querySelector('#app').textContent, /本地没有找到这份 Skill/);
+  click('[data-action="deliver-skill"][data-target="claude"]');
+  await waitFor(() => /已投递/.test(toastText()));
+  assert.equal(globalThis.chrome.windows.created.length, 0);
+  assert.equal(stub.local['futurecontext.v1'].assets.find((asset) => asset.id === 's1').skillDelivery.targets.claude.slug, 'Email-reviewer');
+});
+
+test('present on disk skill is not recallable', async () => {
+  click('[data-tab="skill"]');
+  await waitFor(() => document.querySelector('[data-id="s1"]'));
+  click('[data-action="open-asset"][data-id="s1"]');
+  await waitFor(() => /目录里已有/.test(document.querySelector('#app').textContent));
+  assert.match(document.querySelector('#app').textContent, /版本一致/);
+  assert.equal(document.querySelector('[data-action="deliver-skill"][data-target="cursor"]'), null);
+  assert.equal(document.querySelector('[data-action="refresh-skill"][data-target="cursor"]'), null);
+  assert.equal(document.querySelector('[data-action="recall-skill"][data-target="cursor"]'), null);
+  assert.equal(stub.local['futurecontext.v1'].assets.find((asset) => asset.id === 's1').skillDelivery, undefined);
+});
+
+test('shared agents directory shows on Cursor without claiming it', async () => {
+  click('[data-tab="skill"]');
+  await waitFor(() => document.querySelector('[data-id="s1"]'));
+  click('[data-action="open-asset"][data-id="s1"]');
+  await waitFor(() => /通用 Agent 目录里已有/.test(document.querySelector('#app').textContent));
+  assert.match(document.querySelector('#app').textContent, /版本一致/);
+  assert.equal(document.querySelector('[data-action="deliver-skill"][data-target="cursor"]'), null);
+  assert.equal(document.querySelector('[data-action="recall-skill"][data-target="cursor"]'), null);
+});
+
+test('outdated on disk skill can refresh the local copy', async () => {
+  click('[data-tab="skill"]');
+  await waitFor(() => document.querySelector('[data-id="s1"]'));
+  click('[data-action="open-asset"][data-id="s1"]');
+  await waitFor(() => /版本不一致/.test(document.querySelector('#app').textContent));
+  assert.equal(document.querySelector('[data-action="recall-skill"][data-target="cursor"]'), null);
+  click('[data-action="refresh-skill"][data-target="cursor"]');
+  await waitFor(() => /更新本地/.test(document.querySelector('#confirm-title')?.textContent || ''));
+  confirmOpenDialog();
+  await waitFor(() => /更新/.test(toastText()));
+  assert.equal(globalThis.chrome.windows.created.length, 0);
+});
+
+test('scan recovers marked delivery into skillDelivery', async () => {
+  click('[data-tab="skill"]');
+  await waitFor(() => /已投递/.test(document.querySelector('#app').textContent));
+  click('[data-action="open-asset"][data-id="s1"]');
+  await waitFor(() => document.querySelector('[data-action="recall-skill"][data-target="cursor"]'));
+  assert.match(document.querySelector('#app').textContent, /已投递/);
+  assert.equal(stub.local['futurecontext.v1'].assets.find((asset) => asset.id === 's1').skillDelivery.targets.cursor.slug, 'Email-reviewer');
+});
+
+test('opening skill details, focusing, and settings do not open the directory picker', async () => {
+  assert.equal(globalThis.__pickerCalls, 0);
+  assert.equal(globalThis.__permissionPrompts, 0);
+  click('[data-tab="skill"]');
+  await waitFor(() => document.querySelector('[data-id="s1"]'));
+  click('[data-action="open-asset"][data-id="s1"]');
+  await waitFor(() => /允许访问/.test(document.querySelector('#app').textContent));
+  assert.equal(document.querySelector('[data-action="bind-agent-folder"]'), null);
+  assert.equal(document.querySelector('[data-action="deliver-skill"][data-target="claude"]'), null);
+  assert.equal(document.querySelector('[data-action="allow-agent-folder"][data-target="claude"]')?.textContent, '允许访问');
+  assert.equal(globalThis.__pickerCalls, 0);
+  assert.equal(globalThis.__permissionPrompts, 0);
+  window.dispatchEvent(new window.Event('focus'));
+  await flush(20);
+  assert.equal(globalThis.__pickerCalls, 0);
+  assert.equal(globalThis.__permissionPrompts, 0);
+  click('[data-action="allow-agent-folder"][data-target="claude"]');
+  await waitFor(() => globalThis.__permissionPrompts === 1);
+  assert.equal(globalThis.__pickerCalls, 0);
+  assert.equal(globalThis.chrome.windows.created.length, 0);
+});
+
+test('settings bind agent folders without rewriting the GitHub Token form', async () => {
+  click('[data-action="settings"]');
+  await waitFor(() => document.querySelector('#agent-folder-list'));
+  assert.match(document.querySelector('#app').textContent, /Agent 目录/);
+  assert.match(document.querySelector('#app').textContent, /选择目录不会把库里的 Skill 写进去/);
+  assert.equal(document.querySelectorAll('#agent-folder-list details.agent-folder-root').length, 1);
+  assert.match(document.querySelector('#agent-folder-list').textContent, /Claude Code/);
+  assert.equal(document.querySelectorAll('#agent-folder-list [data-action="bind-agent-folder"]').length, 5);
+  assert.match(document.querySelector('#app').textContent, /地址栏|Command\+Shift\+G/);
+  document.querySelector('#github-token').value = 'ghp_keep_form';
+  click('[data-action="bind-agent-folder"][data-target="cursor"]');
+  await waitFor(() => /已记住/.test(toastText()));
+  assert.equal(document.querySelector('#github-token').value, 'ghp_keep_form');
+  assert.equal(globalThis.chrome.windows.created.length, 0);
+  window.dispatchEvent(new window.Event('focus'));
+  await flush(20);
+  assert.equal(document.querySelector('#github-token').value, 'ghp_keep_form');
+  assert.match(document.querySelector('#app').textContent, /外来同名文件夹不会被当成可撤回投递/);
+});
+
+test('delivered skill can be recalled and warns before library delete', async () => {
+  click('[data-tab="skill"]');
+  await waitFor(() => /已投递/.test(document.querySelector('#app').textContent));
+  click('[data-action="open-asset"][data-id="s1"]');
+  await waitFor(() => document.querySelector('[data-action="recall-skill"][data-target="claude"]'));
+  assert.match(document.querySelector('#app').textContent, /已投递/);
+  click('[data-action="recall-skill"][data-target="claude"]');
+  await waitFor(() => /撤回投递/.test(document.querySelector('#confirm-title')?.textContent || ''));
+  assert.match(document.querySelector('#confirm-description').textContent, /库里的收藏保留/);
+  confirmOpenDialog();
+  await waitFor(() => /还没有选择|撤回/.test(toastText()));
+  assert.equal(globalThis.chrome.windows.created.length, 0);
+  click('[data-action="delete-asset"][data-id="s1"]');
+  await waitFor(() => /永久删除/.test(document.querySelector('#confirm-title')?.textContent || ''));
+  assert.match(document.querySelector('#confirm-description').textContent, /请先在详情页撤回/);
+});
+
+test('stale delivered skill offers an update instead of a silent overwrite', async () => {
+  click('[data-tab="skill"]');
+  await waitFor(() => /已投递/.test(document.querySelector('#app').textContent));
+  click('[data-action="open-asset"][data-id="s1"]');
+  await waitFor(() => document.querySelector('[data-action="deliver-skill"][data-target="claude"]'));
+  assert.match(document.querySelector('#app').textContent, /库已更新/);
+  assert.match(document.querySelector('[data-action="deliver-skill"][data-target="claude"]').textContent, /更新投递/);
+});
+
+test('unsaved skill editor does not offer delivery', async () => {
+  click('[data-tab="skill"]');
+  await waitFor(() => document.querySelector('[data-action="new-asset"]'));
+  click('[data-action="new-asset"]');
+  await waitFor(() => document.querySelector('#editor-form'));
+  assert.equal(document.querySelector('[data-action="deliver-skill"]'), null);
+  assert.doesNotMatch(document.querySelector('#app').textContent, /投递到 Agent/);
 });
 
 test('editor save, category create, and back', async () => {
