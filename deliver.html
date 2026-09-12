@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FutureContext 投递</title>
+    <link rel="stylesheet" href="popup.css" />
+    <style>
+      html, body { height: auto; max-height: none; max-width: none; min-height: 0; overflow: auto; width: 100%; }
+      .app-shell { min-height: 0; width: auto; }
+      .app-content { min-height: 0; }
+    </style>
+  </head>
+  <body>
+    <main class="app-shell" aria-label="投递到 Agent">
+      <header class="app-header">
+        <div class="brand">
+          <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M23.9 8.8A11.2 11.2 0 1 0 24 23.1"/><path d="M22.2 16h6.3"/></svg>
+          <span>FutureContext</span>
+        </div>
+      </header>
+      <section id="app" class="app-content" aria-live="polite"></section>
+    </main>
+    <script type="module" src="deliver.js"></script>
+  </body>
+</html>

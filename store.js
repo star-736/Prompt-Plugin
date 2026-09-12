@@ -1,5 +1,6 @@
 import { DEFAULT_PALETTE_TYPES } from './in-place.js';
 import { assertPackageLimits } from './package-store.js';
+import { isAgentTarget, normalizeSkillDelivery } from './agent-deliver.js';
 
 export const APP_STORAGE_KEY = 'futurecontext.v1';
 export const BACKUP_FORMAT = 'futurecontext.backup';
@@ -59,7 +60,8 @@ function normalizeSettings(settings) {
 function normalizeUsage(usage) { return { log: Array.isArray(usage?.log) ? usage.log.filter((time) => Number.isFinite(time)) : [] }; }
 function normalizeAsset(asset) {
   const useCount = Number(asset.useCount); const lastUsedAt = Number(asset.lastUsedAt);
-  return { ...asset, useCount: Number.isFinite(useCount) && useCount > 0 ? Math.floor(useCount) : 0, lastUsedAt: Number.isFinite(lastUsedAt) && lastUsedAt > 0 ? lastUsedAt : null, pinned: asset.privacy === 'normal' && asset.pinned === true };
+  const skillDelivery = asset.type === 'skill' ? normalizeSkillDelivery(asset.skillDelivery) : undefined;
+  return { ...asset, useCount: Number.isFinite(useCount) && useCount > 0 ? Math.floor(useCount) : 0, lastUsedAt: Number.isFinite(lastUsedAt) && lastUsedAt > 0 ? lastUsedAt : null, pinned: asset.privacy === 'normal' && asset.pinned === true, skillDelivery };
 }
 
 export function databaseRevision(database) {
@@ -261,6 +263,39 @@ export function setAssetPinned(database, id, pinned) {
   if (next.assets[index].privacy !== 'normal') throw new Error('私密库不提供置顶。');
   next.assets[index] = { ...next.assets[index], pinned: Boolean(pinned) }; return next;
 }
+export function setSkillDeliveryTarget(database, id, target, record, now = Date.now()) {
+  if (!isAgentTarget(target)) throw new Error('不支持的 Agent。');
+  const next = normalizeDatabase(clone(database));
+  const index = next.assets.findIndex((asset) => asset.id === id);
+  if (index < 0 || next.assets[index].type !== 'skill') throw new Error('只有 Skill 可以投递到 Agent。');
+  const asset = next.assets[index];
+  const slug = String(record?.slug ?? '').trim();
+  if (!slug) throw new Error('投递缺少目录名。');
+  next.assets[index] = {
+    ...asset,
+    skillDelivery: {
+      targets: {
+        ...(asset.skillDelivery?.targets ?? {}),
+        [target]: {
+          slug,
+          deliveredAt: Number(record.deliveredAt) || now,
+          contentUpdatedAt: Number(record.contentUpdatedAt) || asset.updatedAt || now
+        }
+      }
+    }
+  };
+  return next;
+}
+export function clearSkillDeliveryTarget(database, id, target) {
+  if (!isAgentTarget(target)) throw new Error('不支持的 Agent。');
+  const next = normalizeDatabase(clone(database));
+  const index = next.assets.findIndex((asset) => asset.id === id);
+  if (index < 0) throw new Error('找不到该条目。');
+  const targets = { ...(next.assets[index].skillDelivery?.targets ?? {}) };
+  delete targets[target];
+  next.assets[index] = { ...next.assets[index], skillDelivery: Object.keys(targets).length ? { targets } : undefined };
+  return next;
+}
 export function setAssetCategory(database, id, categoryId, { now = Date.now() } = {}) {
   const next = normalizeDatabase(clone(database)); const index = next.assets.findIndex((asset) => asset.id === id); if (index < 0) throw new Error('找不到该条目。');
   const asset = next.assets[index];
@@ -324,7 +359,7 @@ export function mergeBackup(database, backupValue, { now = Date.now(), idFactory
   const backup = parseBackup(backupValue); const next = normalizeDatabase(clone(database)); const categoryIds = new Map(); const known = new Map(next.categories.map((category) => [categoryKey(category.scope, category.name), category]));
   for (const category of backup.categories) { if (!CATEGORY_SCOPES.includes(category.scope) || !normalizedName(category.name)) continue; const key = categoryKey(category.scope, category.name); let target = known.get(key); if (!target) { target = { id: idFactory(), scope: category.scope, name: normalizedName(category.name), createdAt: now, createdBy: category.createdBy ?? 'human' }; next.categories.push(target); known.set(key, target); } categoryIds.set(category.id, target.id); }
   const fingerprints = new Set(next.assets.map((asset) => assetFingerprint(asset, categoryNameMap(next)))); const packageImports = []; let imported = 0; let skipped = 0;
-  for (const source of backup.assets) try { const categoryId = source.type === 'aigc' || source.privacy === 'private' ? source.categoryId ?? null : (categoryIds.get(source.categoryId) ?? null); const asset = validateAsset({ ...source, categoryId }, next); const candidate = { ...asset, title: source.type === 'aigc' ? (source.title ?? '') : asset.title, categoryId: source.type === 'aigc' ? (source.categoryId ?? null) : asset.categoryId, skillPackage: source.skillPackage ?? null }; const fingerprint = assetFingerprint(candidate, categoryNameMap(next)); if (fingerprints.has(fingerprint)) { skipped += 1; continue; } if (candidate.skillPackage?.packageId) { const targetPackageId = idFactory(); packageImports.push({ sourcePackageId: candidate.skillPackage.packageId, targetPackageId }); candidate.skillPackage = { ...candidate.skillPackage, packageId: targetPackageId }; } next.assets.push(normalizeAsset({ ...candidate, id: idFactory(), createdAt: source.createdAt ?? now, updatedAt: source.updatedAt ?? now, titleSource: source.titleSource ?? (candidate.title ? 'manual' : 'none'), categorySource: source.categorySource ?? (candidate.categoryId ? 'manual' : 'none'), useCount: source.useCount, lastUsedAt: source.lastUsedAt, pinned: source.pinned })); fingerprints.add(fingerprint); imported += 1; } catch { skipped += 1; }
+  for (const source of backup.assets) try { const categoryId = source.type === 'aigc' || source.privacy === 'private' ? source.categoryId ?? null : (categoryIds.get(source.categoryId) ?? null); const asset = validateAsset({ ...source, categoryId }, next); const candidate = { ...asset, title: source.type === 'aigc' ? (source.title ?? '') : asset.title, categoryId: source.type === 'aigc' ? (source.categoryId ?? null) : asset.categoryId, skillPackage: source.skillPackage ?? null }; const fingerprint = assetFingerprint(candidate, categoryNameMap(next)); if (fingerprints.has(fingerprint)) { skipped += 1; continue; } if (candidate.skillPackage?.packageId) { const targetPackageId = idFactory(); packageImports.push({ sourcePackageId: candidate.skillPackage.packageId, targetPackageId }); candidate.skillPackage = { ...candidate.skillPackage, packageId: targetPackageId }; } next.assets.push(normalizeAsset({ ...candidate, id: idFactory(), createdAt: source.createdAt ?? now, updatedAt: source.updatedAt ?? now, titleSource: source.titleSource ?? (candidate.title ? 'manual' : 'none'), categorySource: source.categorySource ?? (candidate.categoryId ? 'manual' : 'none'), useCount: source.useCount, lastUsedAt: source.lastUsedAt, pinned: source.pinned, skillDelivery: undefined })); fingerprints.add(fingerprint); imported += 1; } catch { skipped += 1; }
   return { database: next, imported, skipped, packages: backup.packages, packageImports };
 }
 export function saveGithubSkillAsset(database, packageInfo, { now = Date.now(), id = newId(), updateAssetId = null } = {}) {

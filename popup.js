@@ -49,6 +49,8 @@ import { githubToken, saveGitHubToken } from './github-auth.js';
 import { buildPackageFileTree, deletePackage, exportPackages, getPackage, putPackage, isTextFile } from './package-store.js';
 import { githubSkillUrlError, inspectGitHubSkillUrl } from './github-skill.js';
 import { isPromptableSite, isRestrictedTabUrl, normalizeSiteOrigin, originCoveredBySites, originOfUrl, PALETTE_SCRIPT_FILE, patternsForSites, relatedMatchPatterns, SHORTCUT_LABEL, SITE_PRESETS, siteHost } from './in-place.js';
+import { AGENT_TARGETS, agentPathHint, deliveryStatus, deliverySummary } from './agent-deliver.js';
+import { listBindings } from './agent-folders.js';
 
 const app = document.querySelector('#app');
 const toast = document.querySelector('#toast');
@@ -83,7 +85,8 @@ const state = {
   packageRecord: null,
   packageCategoryCreating: false,
   aiUnlockAction: null,
-  proposalEditingId: null
+  proposalEditingId: null,
+  agentBindings: []
 };
 
 let toastTimer;
@@ -304,7 +307,7 @@ function renderAssetList() {
   if (!assets.length) return `<div class="empty-state"><p>暂无${escapeHtml(emptyName())}</p><div class="empty-actions"><button class="button button-primary" type="button" data-action="new-asset">新建${escapeHtml(emptyName())}</button>${githubCollect}</div></div>`;
   return `<ul class="asset-list">${assets.map((asset) => `<li class="asset-row">
     <button class="asset-open" type="button" data-action="open-asset" data-id="${asset.id}">
-      ${asset.type === 'aigc' ? `<span class="asset-aigc-content">${escapeHtml(asset.content)}</span>` : asset.type === 'command' ? `<span class="asset-command-content">${escapeHtml(asset.content)}</span><span class="asset-meta"><span class="category-badge">${escapeHtml(categoryName(asset.categoryId))}</span></span>` : `<span class="asset-title">${escapeHtml(displayTitle(asset))}</span><span class="asset-preview">${escapeHtml(previewFor(asset))}</span>${asset.privacy === 'normal' ? `<span class="asset-meta"><span class="category-badge">${escapeHtml(categoryName(asset.categoryId))}</span></span>` : ''}`}
+      ${asset.type === 'aigc' ? `<span class="asset-aigc-content">${escapeHtml(asset.content)}</span>` : asset.type === 'command' ? `<span class="asset-command-content">${escapeHtml(asset.content)}</span><span class="asset-meta"><span class="category-badge">${escapeHtml(categoryName(asset.categoryId))}</span></span>` : `<span class="asset-title">${escapeHtml(displayTitle(asset))}</span><span class="asset-preview">${escapeHtml(previewFor(asset))}</span>${asset.privacy === 'normal' ? `<span class="asset-meta"><span class="category-badge">${escapeHtml(categoryName(asset.categoryId))}</span>${asset.type === 'skill' && deliverySummary(asset).length ? `<span class="delivery-badge">已投递 ${escapeHtml(deliverySummary(asset).join('、'))}</span>` : ''}</span>` : ''}`}
     </button>
     <div class="asset-actions">${pinBtn(asset)}<button class="button button-ghost button-small copy-button" type="button" data-action="copy-asset" data-id="${asset.id}">复制</button><button class="button button-ghost button-small" type="button" data-action="delete-asset" data-id="${asset.id}">删除</button></div>
   </li>`).join('')}</ul>${githubCollect ? `<div class="library-secondary-action">${githubCollect}</div>` : ''}`;
@@ -383,7 +386,20 @@ function renderEditor() {
       <button class="button button-primary button-small" type="submit">保存</button>
     </div>
     ${management}
+    ${existing?.type === 'skill' ? renderSkillDelivery(existing) : ''}
   </form>`;
+}
+
+function renderSkillDelivery(asset) {
+  const rows = AGENT_TARGETS.map((target) => {
+    const status = deliveryStatus(asset, target.id);
+    const bound = state.agentBindings.some((item) => item.id === target.id);
+    const stateLabel = status.state === 'delivered' ? '已投递' : status.state === 'stale' ? '库已更新' : '未投递';
+    const action = status.state === 'idle' ? 'deliver-skill' : status.state === 'stale' ? 'deliver-skill' : 'recall-skill';
+    const actionLabel = status.state === 'idle' ? '投递' : status.state === 'stale' ? '更新投递' : '撤回';
+    return `<div class="setting-row"><div><div class="setting-title">${escapeHtml(target.label)}</div><div class="setting-description">${stateLabel}${bound ? '' : ' · 首次需选择目录'}</div></div><button class="button button-ghost button-small" type="button" data-action="${action}" data-id="${asset.id}" data-target="${target.id}">${actionLabel}</button></div>`;
+  }).join('');
+  return `<section class="section-card skill-delivery"><h2>投递到 Agent</h2><p>默认只收藏，不会写入任何 Agent 目录。投递可撤回，库里的收藏始终保留。</p><div class="settings-list">${rows}</div></section>`;
 }
 
 function renderCategories() {
@@ -409,9 +425,24 @@ function renderSettings() {
     <div class="setting-row"><div><div class="setting-title">整理现有内容</div><div class="setting-description">仅处理通用 Prompt 与 Skill；AIGC 永不发送。</div></div><button class="button button-ghost button-small" type="button" data-action="organize-existing">整理</button></div>
     <div class="setting-row"><div><div class="setting-title">分类结构建议</div><div class="setting-description">已有分类的合并、重命名或拆分必须由你确认应用。</div></div><button class="button button-ghost button-small" type="button" data-action="view-proposals">${ai.proposals.filter((proposal) => proposal.status === 'pending').length ? '查看建议' : '暂无建议'}</button></div>
     <div class="setting-row"><div><div class="setting-title">整理阈值</div><div class="setting-description">未分类 ${ai.thresholds.uncategorized} 条；结构检查 ${ai.thresholds.restructureChanges} 条 / ${ai.thresholds.restructureDays} 天。</div></div><button class="button button-ghost button-small" type="button" data-action="edit-ai-thresholds">调整</button></div>
+    <div class="setting-row setting-row-stack"><div><div class="setting-title">Agent 目录</div><div class="setting-description">只记住写入位置。选择目录不会把库里的 Skill 写进去；投递仍要在 Skill 详情里逐条确认。</div></div></div>
+    <div id="agent-folder-list">${renderAgentFolderRows()}</div>
     <div class="setting-row"><div><div class="setting-title">导出全部数据</div><div class="setting-description">导出一个包含普通与私密内容的 JSON 备份文件。</div></div><button class="button button-ghost button-small" type="button" data-action="export-backup">导出</button></div>
     <div class="setting-row"><div><div class="setting-title">导入备份</div><div class="setting-description">只合并新内容，不覆盖或删除已有条目。</div></div><button class="button button-ghost button-small" type="button" data-action="import-backup">导入</button></div>
   </div>`;
+}
+
+function renderAgentFolderRows() {
+  return AGENT_TARGETS.map((target) => {
+    const bound = state.agentBindings.find((item) => item.id === target.id);
+    return `<div class="setting-row"><div><div class="setting-title">${escapeHtml(target.label)}</div><div class="setting-description">${bound ? `已选择 ${escapeHtml(bound.displayName || 'skills')}` : `未选择 · ${escapeHtml(agentPathHint(target.id))}`}</div></div><div class="setting-actions"><button class="button button-ghost button-small" type="button" data-action="bind-agent-folder" data-target="${target.id}">${bound ? '更换目录' : '选择目录'}</button>${bound ? `<button class="button button-ghost button-small" type="button" data-action="unbind-agent-folder" data-target="${target.id}">解除绑定</button>` : ''}</div></div>`;
+  }).join('');
+}
+
+function refreshAgentFolderSettings() {
+  const host = document.querySelector('#agent-folder-list');
+  if (!host) return;
+  host.innerHTML = renderAgentFolderRows();
 }
 
 function renderProviders() {
@@ -456,7 +487,7 @@ function renderPackageDetail() {
   const asset = state.database.assets.find((item) => item.id === state.packageAssetId);
   const record = state.packageRecord;
   if (!asset || !record) return `${pageHeading('Skill 文件', 'library')}<div class="empty-state"><p>无法读取本地 Skill 文件。</p></div>`;
-  return `${renderReadOnlyBanner()}${pageHeading(asset.title, 'library')}<section class="section-card package-source"><h2>GitHub Skill</h2><p>${escapeHtml(asset.skillPackage.source.repository)} · ${escapeHtml(asset.skillPackage.source.directory)} · ${escapeHtml(asset.skillPackage.source.commit.slice(0, 7))}</p><div class="section-actions"><button class="button button-ghost button-small" type="button" data-action="update-github-skill" data-id="${asset.id}">检查 GitHub 更新</button><button class="button button-ghost button-small pin-button ${asset.pinned ? 'is-pinned' : ''}" type="button" data-action="toggle-pin" data-id="${asset.id}">${asset.pinned ? '已置顶' : '置顶'}</button><button class="button button-ghost button-small" type="button" data-action="copy-asset" data-id="${asset.id}">复制 SKILL.md</button><button class="button button-ghost button-small" type="button" data-action="delete-asset" data-id="${asset.id}">永久删除</button></div></section><div class="package-category">${categoryOptions('skill', 'normal', asset.categoryId, state.packageCategoryCreating)}</div><div class="package-tree">${renderPackageTreeNodes(buildPackageFileTree(record.files))}</div>`;
+  return `${renderReadOnlyBanner()}${pageHeading(asset.title, 'library')}<section class="section-card package-source"><h2>GitHub Skill</h2><p>${escapeHtml(asset.skillPackage.source.repository)} · ${escapeHtml(asset.skillPackage.source.directory)} · ${escapeHtml(asset.skillPackage.source.commit.slice(0, 7))}</p><div class="section-actions"><button class="button button-ghost button-small" type="button" data-action="update-github-skill" data-id="${asset.id}">检查 GitHub 更新</button><button class="button button-ghost button-small pin-button ${asset.pinned ? 'is-pinned' : ''}" type="button" data-action="toggle-pin" data-id="${asset.id}">${asset.pinned ? '已置顶' : '置顶'}</button><button class="button button-ghost button-small" type="button" data-action="copy-asset" data-id="${asset.id}">复制 SKILL.md</button><button class="button button-ghost button-small" type="button" data-action="delete-asset" data-id="${asset.id}">永久删除</button></div></section>${renderSkillDelivery(asset)}<div class="package-category">${categoryOptions('skill', 'normal', asset.categoryId, state.packageCategoryCreating)}</div><div class="package-tree">${renderPackageTreeNodes(buildPackageFileTree(record.files))}</div>`;
 }
 
 function renderLockReset() {
@@ -471,8 +502,12 @@ function renderSites() {
   return `${renderReadOnlyBanner()}${pageHeading('启用站点', 'settings')}<div class="provider-intro">只有启用站点会加载取用面板；FutureContext 只读取你正在输入的输入框里的文字以识别 //。停用会同时撤销该网站的权限。</div><form class="inline-create" id="site-form"><input id="site-origin" placeholder="例如 chat.example.com" required /><button class="button button-primary" type="submit">启用</button></form><div class="settings-list">${presetRows}${extraRows}</div>`;
 }
 
+let renderedView = null;
+
 function render() {
   if (!state.database) return;
+  const viewChanged = state.view !== renderedView;
+  renderedView = state.view;
   if (state.view === 'editor') app.innerHTML = renderEditor();
   else if (state.view === 'categories') app.innerHTML = renderReadOnlyBanner() + renderCategories();
   else if (state.view === 'settings') app.innerHTML = renderSettings();
@@ -485,6 +520,10 @@ function render() {
   else if (state.view === 'package-detail') app.innerHTML = renderPackageDetail();
   else if (state.view === 'reset-lock') app.innerHTML = renderReadOnlyBanner() + renderLockReset();
   else app.innerHTML = renderLibrary();
+  if (viewChanged) {
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+  }
 }
 
 async function setNormalTab(tab) {
@@ -661,7 +700,7 @@ async function deleteAsset(id) {
   if (!asset) return;
   showConfirm({
     title: '永久删除',
-    description: `“${displayTitle(asset)}”将被永久删除，无法恢复。`,
+    description: `“${displayTitle(asset)}”将被永久删除，无法恢复。${asset.type === 'skill' && deliverySummary(asset).length ? `已投递到 ${deliverySummary(asset).join('、')} 的副本不会自动删除，请先在详情页撤回。` : ''}`,
     actionLabel: '永久删除',
     danger: true,
     onConfirm: async () => {
@@ -919,7 +958,16 @@ async function handleClick(event) {
     catch { showToast('无法移除 GitHub Token，请重试。'); }
     return;
   }
-  if (action === 'settings') return state.view === 'editor' ? returnFromEditor() : (state.view = 'settings', render());
+  if (action === 'settings') {
+    if (state.view === 'editor') return returnFromEditor();
+    state.view = 'settings';
+    render();
+    try {
+      state.agentBindings = await listBindings();
+      if (state.view === 'settings') refreshAgentFolderSettings();
+    } catch { state.agentBindings = []; }
+    return;
+  }
   if (action === 'library') { state.view = 'library'; return render(); }
   if (action === 'editor-back') return returnFromEditor();
   if (action === 'new-asset') return openEditor();
@@ -974,6 +1022,27 @@ async function handleClick(event) {
   if (action === 'cancel-proposal-edit') { state.proposalEditingId = null; return render(); }
   if (action === 'collect-github-skill') return collectGitHubSkillFromPage();
   if (action === 'update-github-skill') return updateGitHubSkill(button.dataset.id);
+  if (action === 'deliver-skill') return openDeliverSession(button.dataset.id, button.dataset.target, 'deliver');
+  if (action === 'recall-skill') return confirmRecallSkill(button.dataset.id, button.dataset.target);
+  if (action === 'bind-agent-folder') return openDeliverSession('', button.dataset.target, 'bind');
+  if (action === 'unbind-agent-folder') return openDeliverSession('', button.dataset.target, 'unbind');
+}
+
+function openDeliverSession(assetId, target, action) {
+  if (state.readOnly) return showToast('当前为只读，修改不会保存。');
+  const query = new URLSearchParams({ action, target });
+  if (assetId) query.set('assetId', assetId);
+  chrome.windows.create({ url: chrome.runtime.getURL(`deliver.html?${query}`), type: 'popup', width: 520, height: 520 });
+}
+
+function confirmRecallSkill(assetId, target) {
+  const label = AGENT_TARGETS.find((item) => item.id === target)?.label ?? target;
+  showConfirm({
+    title: '撤回投递',
+    description: `将从 ${label} 的 skills 目录删除 FutureContext 写下的副本。库里的收藏保留。`,
+    actionLabel: '撤回投递',
+    onConfirm: () => openDeliverSession(assetId, target, 'recall')
+  });
 }
 
 async function deleteManagedCategory(id) {
@@ -1019,7 +1088,10 @@ async function handleSubmit(event) {
       state.githubTokenConfigured = true;
       render();
       showToast('GitHub Token 已保存，后续收集和更新将使用认证请求。');
-    } catch (error) { form.querySelector('#github-token-status').textContent = error.message; }
+    } catch (error) {
+      const status = document.querySelector('#github-token-status');
+      if (status) status.textContent = error.message;
+    }
     return;
   }
   if (form.id === 'editor-form') return saveEditor();
@@ -1091,6 +1163,7 @@ async function initialize() {
     state.readOnly = isReadOnlyDatabase(state.database);
     state.githubTokenConfigured = Boolean(await githubToken());
     state.activeTab = ['generic', 'skill', 'aigc', 'command'].includes(state.database.settings.lastNormalTab) ? state.database.settings.lastNormalTab : 'generic';
+    try { state.agentBindings = await listBindings(); } catch { state.agentBindings = []; }
     try {
       const notice = await sendBackground({ type: 'read-notice' });
       if (notice?.message) state.notice = notice.message;

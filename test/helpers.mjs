@@ -29,7 +29,13 @@ export function createMemoryIndexedDB() {
     return databases.get(name);
   }
 
-  function requestOf(run) {
+  function cloneRecord(value) {
+  const copy = structuredClone({ ...value, handle: undefined });
+  if (value?.handle) copy.handle = value.handle;
+  return copy;
+}
+
+function requestOf(run) {
     const request = { result: undefined, error: null, onsuccess: null, onerror: null };
     queueMicrotask(() => {
       try {
@@ -64,8 +70,8 @@ export function createMemoryIndexedDB() {
               put(value) {
                 pending += 1;
                 return requestOf(() => {
-                  if (!value?.id || !Array.isArray(value.files)) throw new Error('Skill 包数据不完整。');
-                  data.set(value.id, structuredClone(value));
+                  if (!value?.id) throw new Error('记录缺少 id。');
+                  data.set(value.id, cloneRecord(value));
                   finish();
                   return value;
                 });
@@ -74,7 +80,7 @@ export function createMemoryIndexedDB() {
                 pending += 1;
                 return requestOf(() => {
                   finish();
-                  return data.has(id) ? structuredClone(data.get(id)) : undefined;
+                  return data.has(id) ? cloneRecord(data.get(id)) : undefined;
                 });
               },
               delete(id) {
@@ -210,7 +216,15 @@ export function createChromeStub(options = {}) {
       onClicked: { addListener(listener) { listeners.contextClicked.push(listener); } }
     },
     commands: { onCommand: { addListener(listener) { listeners.command.push(listener); } } },
+    windows: {
+      created: [],
+      async create(info) {
+        chrome.windows.created.push(info);
+        return { id: 99, ...info };
+      }
+    },
     runtime: {
+      getURL(path) { return `chrome-extension://futurecontext/${path}`; },
       async sendMessage(message) {
         if (typeof options.sendMessage === 'function') return options.sendMessage(message);
         const [listener] = listeners.message;
@@ -345,6 +359,10 @@ export function popupHtml() {
   return readFileSync(join(root, 'popup.html'), 'utf8');
 }
 
+export function deliverHtml() {
+  return readFileSync(join(root, 'deliver.html'), 'utf8');
+}
+
 export function click(selectorOrElement) {
   const element = typeof selectorOrElement === 'string' ? document.querySelector(selectorOrElement) : selectorOrElement;
   if (!element) throw new Error(`click missing ${selectorOrElement}`);
@@ -360,4 +378,61 @@ export function confirmOpenDialog() {
 
 export async function flush(ms = 0) {
   await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function memoryFileHandle(entry) {
+  return {
+    kind: 'file',
+    async createWritable() {
+      return {
+        async write(data) {
+          entry.bytes = typeof data === 'string' ? new TextEncoder().encode(data) : new Uint8Array(data);
+        },
+        async close() {}
+      };
+    },
+    async getFile() {
+      return { async text() { return new TextDecoder().decode(entry.bytes); } };
+    }
+  };
+}
+
+export function createMemoryDirectory(name = 'skills') {
+  const entries = new Map();
+  return {
+    name,
+    kind: 'directory',
+    _entries: entries,
+    async queryPermission() { return 'granted'; },
+    async requestPermission() { return 'granted'; },
+    async *entries() {
+      for (const [child, entry] of entries) yield [child, entry.type === 'dir' ? entry.handle : memoryFileHandle(entry)];
+    },
+    async getDirectoryHandle(child, { create } = {}) {
+      if (!entries.has(child)) {
+        if (!create) { const error = new Error('not found'); error.name = 'NotFoundError'; throw error; }
+        entries.set(child, { type: 'dir', handle: createMemoryDirectory(child) });
+      }
+      const entry = entries.get(child);
+      if (entry.type !== 'dir') throw new Error('TypeMismatchError');
+      return entry.handle;
+    },
+    async getFileHandle(child, { create } = {}) {
+      if (!entries.has(child)) {
+        if (!create) { const error = new Error('not found'); error.name = 'NotFoundError'; throw error; }
+        entries.set(child, { type: 'file', bytes: new Uint8Array() });
+      }
+      const entry = entries.get(child);
+      if (entry.type !== 'file') throw new Error('TypeMismatchError');
+      return memoryFileHandle(entry);
+    },
+    async removeEntry(child) { entries.delete(child); }
+  };
+}
+
+export async function writeMemoryFile(directory, name, text) {
+  const handle = await directory.getFileHandle(name, { create: true });
+  const writable = await handle.createWritable();
+  await writable.write(text);
+  await writable.close();
 }

@@ -8,6 +8,7 @@ import {
   saveAsset,
   saveGithubSkillAsset,
   setPrivacyPassword,
+  setSkillDeliveryTarget,
   updateAiSettings,
   updateInPlaceSettings
 } from '../store.js';
@@ -75,6 +76,11 @@ database = updateAiSettings(database, {
 });
 database = withSites(database, []);
 if (t.name.includes('read-only')) database.version = 999;
+if (t.name.includes('stale delivered skill')) {
+  database = setSkillDeliveryTarget(database, 's1', 'claude', { slug: 'Email-reviewer', deliveredAt: 6, contentUpdatedAt: 1 });
+} else if (t.name.includes('delivered skill')) {
+  database = setSkillDeliveryTarget(database, 's1', 'claude', { slug: 'Email-reviewer', deliveredAt: 6, contentUpdatedAt: 2 });
+}
 if (t.name.includes('activating another provider')) {
   database.ai.providers.push({ ...database.ai.providers[0], id: 'p2', label: 'Second provider' });
 }
@@ -180,6 +186,68 @@ test('search, sort, category filter, pin, and copy', async () => {
   await waitFor(() => /已置顶|已取消置顶/.test(toastText()));
   click('[data-action="copy-asset"]');
   await waitFor(() => /复制/.test(toastText()));
+});
+
+test('saved skill shows explicit deliver actions and opens a deliver window', async () => {
+  click('[data-tab="skill"]');
+  await waitFor(() => document.querySelector('[data-id="s1"]'));
+  click('[data-action="open-asset"][data-id="s1"]');
+  await waitFor(() => document.querySelector('#editor-form'));
+  assert.match(document.querySelector('#app').textContent, /投递到 Agent/);
+  assert.match(document.querySelector('#app').textContent, /默认只收藏/);
+  click('[data-action="deliver-skill"][data-target="claude"]');
+  await flush();
+  assert.match(globalThis.chrome.windows.created[0].url, /deliver\.html\?action=deliver/);
+  assert.match(globalThis.chrome.windows.created[0].url, /target=claude/);
+  assert.match(globalThis.chrome.windows.created[0].url, /assetId=s1/);
+});
+
+test('settings bind agent folders without rewriting the GitHub Token form', async () => {
+  click('[data-action="settings"]');
+  await waitFor(() => document.querySelector('#agent-folder-list'));
+  assert.match(document.querySelector('#app').textContent, /Agent 目录/);
+  assert.match(document.querySelector('#app').textContent, /选择目录不会把库里的 Skill 写进去/);
+  document.querySelector('#github-token').value = 'ghp_keep_form';
+  click('[data-action="bind-agent-folder"][data-target="cursor"]');
+  await flush();
+  assert.equal(document.querySelector('#github-token').value, 'ghp_keep_form');
+  assert.match(globalThis.chrome.windows.created[0].url, /action=bind/);
+  assert.match(globalThis.chrome.windows.created[0].url, /target=cursor/);
+});
+
+test('delivered skill can be recalled and warns before library delete', async () => {
+  click('[data-tab="skill"]');
+  await waitFor(() => /已投递/.test(document.querySelector('#app').textContent));
+  click('[data-action="open-asset"][data-id="s1"]');
+  await waitFor(() => document.querySelector('[data-action="recall-skill"][data-target="claude"]'));
+  assert.match(document.querySelector('#app').textContent, /已投递/);
+  click('[data-action="recall-skill"][data-target="claude"]');
+  await waitFor(() => /撤回投递/.test(document.querySelector('#confirm-title')?.textContent || ''));
+  assert.match(document.querySelector('#confirm-description').textContent, /库里的收藏保留/);
+  confirmOpenDialog();
+  await flush();
+  assert.match(globalThis.chrome.windows.created[0].url, /action=recall/);
+  click('[data-action="delete-asset"][data-id="s1"]');
+  await waitFor(() => /永久删除/.test(document.querySelector('#confirm-title')?.textContent || ''));
+  assert.match(document.querySelector('#confirm-description').textContent, /请先在详情页撤回/);
+});
+
+test('stale delivered skill offers an update instead of a silent overwrite', async () => {
+  click('[data-tab="skill"]');
+  await waitFor(() => /已投递/.test(document.querySelector('#app').textContent));
+  click('[data-action="open-asset"][data-id="s1"]');
+  await waitFor(() => document.querySelector('[data-action="deliver-skill"][data-target="claude"]'));
+  assert.match(document.querySelector('#app').textContent, /库已更新/);
+  assert.match(document.querySelector('[data-action="deliver-skill"][data-target="claude"]').textContent, /更新投递/);
+});
+
+test('unsaved skill editor does not offer delivery', async () => {
+  click('[data-tab="skill"]');
+  await waitFor(() => document.querySelector('[data-action="new-asset"]'));
+  click('[data-action="new-asset"]');
+  await waitFor(() => document.querySelector('#editor-form'));
+  assert.equal(document.querySelector('[data-action="deliver-skill"]'), null);
+  assert.doesNotMatch(document.querySelector('#app').textContent, /投递到 Agent/);
 });
 
 test('editor save, category create, and back', async () => {
