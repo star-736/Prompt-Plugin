@@ -1,4 +1,6 @@
 import {
+  APP_STORAGE_KEY,
+  applyDatabaseChange,
   assetsFor,
   categoriesFor,
   categoryUsage,
@@ -9,24 +11,27 @@ import {
   disableSite,
   displayTitle,
   enableSite,
+  exportRequiresUnlock,
   formatSkillInsert,
   getDraft,
   hasPrivacyLock,
   ignoreSite,
+  importBackupRecords,
   isReadOnlyDatabase,
   loadDatabase,
-  mergeBackup,
   moveAigcAsset,
+  normalizeDatabase,
   READ_ONLY_MESSAGE,
   recordAssetUse,
+  removeAsset,
   removeAssetAndPackage,
   resolveStructureProposal,
   renameCategory,
   saveAsset,
-  saveDatabase,
   saveDraft,
   setAssetCategory,
   setAssetPinned,
+  setLastNormalTab,
   setSortBy,
   sortByFor,
   SORT_OPTIONS,
@@ -41,7 +46,7 @@ import {
 } from './store.js';
 import { PROVIDER_PRESETS, providerOrigin } from './ai-organizer.js';
 import { githubToken, saveGitHubToken } from './github-auth.js';
-import { buildPackageFileTree, deletePackage, exportPackages, getPackage, importPackages, isTextFile } from './package-store.js';
+import { buildPackageFileTree, deletePackage, exportPackages, getPackage, putPackage, isTextFile } from './package-store.js';
 import { githubSkillUrlError, inspectGitHubSkillUrl } from './github-skill.js';
 import { isPromptableSite, isRestrictedTabUrl, normalizeSiteOrigin, originCoveredBySites, originOfUrl, PALETTE_SCRIPT_FILE, patternsForSites, relatedMatchPatterns, SHORTCUT_LABEL, SITE_PRESETS, siteHost } from './in-place.js';
 
@@ -162,16 +167,26 @@ async function requestOrigins(origins) {
   if (!await chrome.permissions.request({ origins })) throw new Error('需要授权对应网站后才能继续。');
 }
 
-async function commit(next) {
+let applyingOwnWrite = false;
+
+async function commit(mutator) {
   if (state.readOnly) {
     showToast('当前为只读，修改不会保存。');
     throw new Error(READ_ONLY_MESSAGE);
   }
-  if (!await saveDatabase(next)) {
-    showToast('当前为只读，修改不会保存。');
-    throw new Error(READ_ONLY_MESSAGE);
+  try {
+    applyingOwnWrite = true;
+    if (!await applyDatabaseChange(mutator)) {
+      showToast('当前为只读，修改不会保存。');
+      throw new Error(READ_ONLY_MESSAGE);
+    }
+  } catch (error) {
+    if (error.message === READ_ONLY_MESSAGE) showToast('当前为只读，修改不会保存。');
+    throw error;
+  } finally {
+    applyingOwnWrite = false;
   }
-  state.database = next;
+  state.database = await loadDatabase();
 }
 
 function renderReadOnlyBanner() {
@@ -204,7 +219,7 @@ function renderSortPicker() {
 
 async function enableSiteOrigin(origin) {
   await requestOrigins(relatedMatchPatterns(origin));
-  await commit(enableSite(state.database, origin));
+  await commit((db) => enableSite(db, origin));
   try {
     await sendBackground({ type: 'sync-sites' });
   } catch (error) {
@@ -231,7 +246,7 @@ async function enableSiteOrigin(origin) {
 }
 
 async function disableSiteOrigin(origin) {
-  await commit(disableSite(state.database, origin));
+  await commit((db) => disableSite(db, origin));
   await sendBackground({ type: 'sync-sites' });
   const leftover = relatedMatchPatterns(origin).filter((pattern) => !patternsForSites(state.database.settings.inPlace.sites).includes(pattern));
   try { if (leftover.length) await chrome.permissions.remove({ origins: leftover }); } catch { /* 权限可能已撤销。 */ }
@@ -267,6 +282,10 @@ function renderCategoryPicker() {
       <button class="menu-item" type="button" data-action="manage-categories">管理分类</button>
     </div>
   </div>`;
+}
+
+function showsCategoryPicker() {
+  return ['generic', 'skill', 'command'].includes(state.activeTab) && !isPrivateView();
 }
 
 function emptyName() {
@@ -312,7 +331,7 @@ function renderLibrary() {
   const tools = privateGate ? '' : `<div class="library-tools">
     <label class="search-box">${searchIcon()}<input id="search" type="search" value="${escapeHtml(state.search)}" placeholder="搜索标题或内容" aria-label="搜索当前内容" /></label>
     ${isPrivateView() ? '' : renderSortPicker()}
-    ${isPrivateView() ? '' : renderCategoryPicker()}
+    ${showsCategoryPicker() ? renderCategoryPicker() : ''}
     <button class="button button-primary" type="button" data-action="new-asset">+ 新建</button>
   </div>`;
   return `${renderReadOnlyBanner()}${renderNoticeBanner()}${renderSiteHint()}${renderTabs()}${renderSubtabs()}${tools}${privateGate ? renderPrivateGate() : renderAssetList()}`;
@@ -473,9 +492,7 @@ async function setNormalTab(tab) {
   state.privacy = 'normal';
   state.search = '';
   state.categoryId = null;
-  const next = structuredClone(state.database);
-  next.settings.lastNormalTab = tab;
-  await commit(next);
+  await commit((db) => setLastNormalTab(db, tab));
   render();
 }
 
@@ -512,7 +529,7 @@ async function persistEditorDraft() {
   state.editor.values = values;
   if (!editorChanged(values)) return;
   try {
-    await commit(saveDraft(state.database, state.editor.reference, values));
+    await commit((db) => saveDraft(db, state.editor.reference, values));
   } catch {
     showToast('草稿保存失败，请重试。');
   }
@@ -522,7 +539,7 @@ async function beginEditorCategoryCreate() {
   if (!state.editor || state.editor.privacy === 'private') return;
   const values = editorValues();
   state.editor.values = values;
-  await commit(saveDraft(state.database, state.editor.reference, values));
+  await commit((db) => saveDraft(db, state.editor.reference, values));
   state.editor.categoryCreating = true;
   render();
   document.querySelector('#editor-new-category')?.focus();
@@ -532,10 +549,12 @@ async function createEditorCategory() {
   if (!state.editor) return;
   const name = document.querySelector('#editor-new-category')?.value ?? '';
   try {
-    const created = createCategory(state.database, scopeFor(state.editor.type, state.editor.privacy), name);
-    state.editor.values = { ...state.editor.values, categoryId: created.category.id };
+    await commit((db) => {
+      const created = createCategory(db, scopeFor(state.editor.type, state.editor.privacy), name);
+      state.editor.values = { ...state.editor.values, categoryId: created.category.id };
+      return saveDraft(created.database, state.editor.reference, state.editor.values);
+    });
     state.editor.categoryCreating = false;
-    await commit(saveDraft(created.database, state.editor.reference, state.editor.values));
     render();
     showToast('分类已新建并选中');
   } catch (error) {
@@ -552,8 +571,10 @@ async function beginPackageCategoryCreate() {
 async function createPackageCategory() {
   const name = document.querySelector('#editor-new-category')?.value ?? '';
   try {
-    const created = createCategory(state.database, 'skill', name);
-    await commit(setAssetCategory(created.database, state.packageAssetId, created.category.id));
+    await commit((db) => {
+      const created = createCategory(db, 'skill', name);
+      return setAssetCategory(created.database, state.packageAssetId, created.category.id);
+    });
     state.packageCategoryCreating = false;
     render();
     showToast('分类已新建并选中');
@@ -568,7 +589,7 @@ async function updatePackageCategory(categoryId) {
   const nextId = categoryId || null;
   if ((asset.categoryId || null) === nextId && asset.categorySource === 'manual') return;
   try {
-    await commit(setAssetCategory(state.database, asset.id, nextId));
+    await commit((db) => setAssetCategory(db, asset.id, nextId));
     render();
     showToast('分类已更新');
   } catch (error) {
@@ -589,7 +610,7 @@ async function returnFromEditor() {
 }
 
 async function finishEditorReturn(discard) {
-  if (discard && state.editor) await commit(discardDraft(state.database, state.editor.reference));
+  if (discard && state.editor) await commit((db) => discardDraft(db, state.editor.reference));
   state.editor = null;
   state.view = 'library';
   render();
@@ -609,7 +630,7 @@ async function copyText(text, { recordId = null } = {}) {
   try {
     await navigator.clipboard.writeText(text);
     showToast('已复制到剪贴板');
-    if (recordId && !state.readOnly) await commit(recordAssetUse(state.database, recordId));
+    if (recordId && !state.readOnly) await commit((db) => recordAssetUse(db, recordId));
   } catch {
     showToast('复制失败，请手动复制。');
   }
@@ -619,9 +640,13 @@ async function saveEditor() {
   const values = editorValues();
   const input = { id: state.editor.assetId, type: state.editor.type, privacy: state.editor.privacy, ...values };
   try {
-    const result = saveAsset(state.database, input);
-    await commit(result.database);
-    if (result.queued) void sendBackground({ type: 'schedule-ai' });
+    let queued = false;
+    await commit((db) => {
+      const result = saveAsset(db, input);
+      queued = result.queued;
+      return result.database;
+    });
+    if (queued) void sendBackground({ type: 'schedule-ai' });
     state.editor = null;
     state.view = 'library';
     render();
@@ -644,7 +669,10 @@ async function deleteAsset(id) {
         showToast('当前为只读，修改不会保存。');
         throw new Error(READ_ONLY_MESSAGE);
       }
-      state.database = await removeAssetAndPackage(state.database, id, { persist: saveDatabase, deletePackage });
+      state.database = await removeAssetAndPackage(state.database, id, {
+        persist: async () => applyDatabaseChange((db) => removeAsset(db, id)),
+        deletePackage
+      });
       state.editor = null;
       state.view = 'library';
       render();
@@ -664,7 +692,7 @@ function moveAsset(id, target) {
       : `“${displayTitle(asset)}”将转为普通 AIGC Prompt，可在未解锁状态下直接查看。移出成功后，私密库中的原件将被删除。`,
     actionLabel: isPrivateTarget ? '移入私密库' : '移出私密库',
     onConfirm: async () => {
-      await commit(moveAigcAsset(state.database, id, target));
+      await commit((db) => moveAigcAsset(db, id, target));
       state.editor = null;
       state.activeTab = 'aigc';
       state.privacy = target;
@@ -682,7 +710,7 @@ async function handlePrivateGate(form) {
   const setError = (message) => { error.textContent = message; error.hidden = false; };
   if (mode === 'setup') {
     if (password !== form.querySelector('#gate-confirm').value) return setError('两次输入的密码不一致。');
-    try { await commit(await setPrivacyPassword(state.database, password)); } catch (reason) { return setError(reason.message); }
+    try { await commit((db) => setPrivacyPassword(db, password)); } catch (reason) { return setError(reason.message); }
   } else if (!await verifyPrivacyPassword(state.database, password)) return setError('密码不正确。');
   state.unlockedPrivate = true;
   if (state.lockReturn === 'export') {
@@ -705,7 +733,7 @@ async function resetLock(form) {
     return;
   }
   try {
-    await commit(await setPrivacyPassword(state.database, password));
+    await commit((db) => setPrivacyPassword(db, password));
     void sendBackground({ type: 'clear-ai-session' });
     state.unlockedPrivate = true;
     state.view = 'settings';
@@ -718,7 +746,7 @@ async function resetLock(form) {
 }
 
 async function requestExport() {
-  if (!state.unlockedPrivate) {
+  if (exportRequiresUnlock(state.database) && !state.unlockedPrivate) {
     showConfirm({
       title: '需要解锁私密库',
       description: '解锁后才能导出包含私密内容的完整备份。',
@@ -754,9 +782,8 @@ async function performExport() {
 async function importBackup(file) {
   if (!file) return;
   try {
-    const result = mergeBackup(state.database, await file.text());
-    await commit(result.database);
-    await importPackages(result.packages, result.packageImports);
+    const result = await importBackupRecords(state.database, await file.text(), { putPackage, deletePackage });
+    state.database = await loadDatabase();
     state.categoryId = null;
     render();
     showToast(`已导入 ${result.imported} 项，跳过 ${result.skipped} 项`);
@@ -781,7 +808,7 @@ async function openAsset(asset) {
 }
 
 async function activateProvider(id) {
-  await commit(updateAiSettings(state.database, { activeProviderId: id }));
+  await commit((db) => updateAiSettings(db, { activeProviderId: id }));
   render();
   showToast('已设为当前 Provider');
 }
@@ -815,7 +842,7 @@ async function completeAiAction() {
 }
 
 async function resolveProposal(id, action) {
-  await commit(resolveStructureProposal(state.database, id, action));
+  await commit((db) => resolveStructureProposal(db, id, action));
   render();
   showToast(action === 'apply' ? '分类方案已应用' : '已保留当前分类');
 }
@@ -914,11 +941,11 @@ async function handleClick(event) {
   }
   if (action === 'toggle-category-menu') { state.categoryMenuOpen = !state.categoryMenuOpen; state.sortMenuOpen = false; return render(); }
   if (action === 'toggle-sort-menu') { state.sortMenuOpen = !state.sortMenuOpen; state.categoryMenuOpen = false; return render(); }
-  if (action === 'set-sort') { try { await commit(setSortBy(state.database, state.activeTab, button.dataset.sort)); state.sortMenuOpen = false; render(); } catch (error) { showToast(error.message || '排序切换失败。'); } return; }
-  if (action === 'toggle-pin') { try { const asset = assetById(button.dataset.id); await commit(setAssetPinned(state.database, button.dataset.id, !asset?.pinned)); render(); showToast(asset?.pinned ? '已取消置顶' : '已置顶'); } catch (error) { showToast(error.message || '置顶操作失败。'); } return; }
+  if (action === 'set-sort') { try { await commit((db) => setSortBy(db, state.activeTab, button.dataset.sort)); state.sortMenuOpen = false; render(); } catch (error) { showToast(error.message || '排序切换失败。'); } return; }
+  if (action === 'toggle-pin') { try { const asset = assetById(button.dataset.id); await commit((db) => setAssetPinned(db, button.dataset.id, !asset?.pinned)); render(); showToast(asset?.pinned ? '已取消置顶' : '已置顶'); } catch (error) { showToast(error.message || '置顶操作失败。'); } return; }
   if (action === 'dismiss-notice') { state.notice = null; return render(); }
   if (action === 'enable-current-site') { try { await enableSiteOrigin(state.tabOrigin); render(); } catch (error) { showToast(error.message || '启用失败。'); } return; }
-  if (action === 'ignore-current-site') { try { await commit(ignoreSite(state.database, state.tabOrigin)); render(); } catch (error) { showToast(error.message || '操作失败。'); } return; }
+  if (action === 'ignore-current-site') { try { await commit((db) => ignoreSite(db, state.tabOrigin)); render(); } catch (error) { showToast(error.message || '操作失败。'); } return; }
   if (action === 'manage-sites') { state.view = 'sites'; return render(); }
   if (action === 'enable-site') { try { await enableSiteOrigin(button.dataset.origin); render(); } catch (error) { showToast(error.message || '启用失败。'); } return; }
   if (action === 'disable-site') { try { await disableSiteOrigin(button.dataset.origin); render(); } catch (error) { showToast(error.message || '停用失败。'); } return; }
@@ -959,7 +986,7 @@ async function deleteManagedCategory(id) {
     actionLabel: '删除分类',
     danger: true,
     onConfirm: async () => {
-      await commit(deleteCategory(state.database, id));
+      await commit((db) => deleteCategory(db, id));
       if (state.categoryId === id) state.categoryId = null;
       render();
       showToast('分类已删除');
@@ -1017,7 +1044,7 @@ async function handleSubmit(event) {
   }
   if (form.id === 'threshold-form') {
     const thresholds = Object.fromEntries(['uncategorized', 'restructureChanges', 'restructureDays'].map((name) => [name, Number(form.elements[name].value)]));
-    await commit(updateAiSettings(state.database, { thresholds })); state.view = 'settings'; render(); showToast('整理阈值已保存'); return;
+    await commit((db) => updateAiSettings(db, { thresholds })); state.view = 'settings'; render(); showToast('整理阈值已保存'); return;
   }
   if (form.id === 'ai-unlock-form') {
     const error = form.querySelector('#ai-unlock-error');
@@ -1028,22 +1055,21 @@ async function handleSubmit(event) {
   if (form.id === 'proposal-form') {
     const proposal = state.database.ai.proposals.find((item) => item.id === form.dataset.id);
     const groups = (proposal?.groups ?? []).map((_, index) => ({ from: form.elements[`from-${index}`].value.split('/'), to: form.elements[`to-${index}`].value }));
-    await commit(updateStructureProposal(state.database, form.dataset.id, groups));
+    await commit((db) => updateStructureProposal(db, form.dataset.id, groups));
     state.proposalEditingId = null;
     await resolveProposal(form.dataset.id, 'apply');
     return;
   }
   if (form.id === 'category-create-form') {
     try {
-      const result = createCategory(state.database, state.manageScope, form.querySelector('#new-category-name').value);
-      await commit(result.database);
+      await commit((db) => createCategory(db, state.manageScope, form.querySelector('#new-category-name').value).database);
       render();
       showToast('分类已新建');
     } catch (error) { showToast(error.message || '新建分类失败。'); }
   }
   if (form.id === 'category-rename-form') {
     try {
-      await commit(renameCategory(state.database, form.dataset.id, form.elements.name.value));
+      await commit((db) => renameCategory(db, form.dataset.id, form.elements.name.value));
       state.categoryEditId = null;
       render();
       showToast('分类已重命名');
@@ -1075,6 +1101,16 @@ async function initialize() {
       state.tabUrl = tab?.url ?? '';
       state.tabOrigin = originOfUrl(tab?.url ?? '');
     } catch { /* 无 tabs 权限时跳过。 */ }
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== 'local' || !changes[APP_STORAGE_KEY]) return;
+      const next = normalizeDatabase(changes[APP_STORAGE_KEY].newValue);
+      if ((next.revision ?? 0) === (state.database?.revision ?? 0)) return;
+      state.database = next;
+      state.readOnly = isReadOnlyDatabase(next);
+      if (applyingOwnWrite) return;
+      if (state.view === 'editor' && state.editor) state.editor.values = editorValues();
+      render();
+    });
     render();
   } catch {
     app.innerHTML = '<div class="empty-state"><p>无法读取本地资料库。</p></div>';
@@ -1100,12 +1136,11 @@ app.addEventListener('change', (event) => {
   }
   if (event.target.closest('#editor-form')) void persistEditorDraft();
   if (event.target.id === 'ai-enabled') {
-    const next = updateAiSettings(state.database, { enabled: event.target.checked });
-    void commit(next).then(() => { if (event.target.checked) return sendBackground({ type: 'schedule-ai' }); }).then(() => { render(); showToast(event.target.checked ? '后台 AI 已开启' : '后台 AI 已关闭'); }).catch(() => showToast('更新后台 AI 设置失败。'));
+    void commit((db) => updateAiSettings(db, { enabled: event.target.checked })).then(() => { if (event.target.checked) return sendBackground({ type: 'schedule-ai' }); }).then(() => { render(); showToast(event.target.checked ? '后台 AI 已开启' : '后台 AI 已关闭'); }).catch(() => showToast('更新后台 AI 设置失败。'));
   }
   if (event.target.id === 'inplace-enabled' || event.target.id === 'inplace-trigger') {
     const patch = event.target.id === 'inplace-enabled' ? { enabled: event.target.checked } : { triggerEnabled: event.target.checked };
-    void commit(updateInPlaceSettings(state.database, patch)).then(() => sendBackground({ type: 'sync-sites' })).then(() => { render(); showToast('就地取用设置已保存'); }).catch(() => showToast('更新就地取用设置失败。'));
+    void commit((db) => updateInPlaceSettings(db, patch)).then(() => sendBackground({ type: 'sync-sites' })).then(() => { render(); showToast('就地取用设置已保存'); }).catch(() => showToast('更新就地取用设置失败。'));
   }
   if (event.target.id === 'provider-kind') {
     const preset = PROVIDER_PRESETS[event.target.value];

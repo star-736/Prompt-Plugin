@@ -6,6 +6,8 @@ import {
   addStructureProposal,
   applyAiAssetResult,
   applyAiCategoryGroups,
+  applyDatabaseChange,
+  APP_STORAGE_KEY,
   assetsFor,
   captureSelection,
   categoriesFor,
@@ -19,10 +21,12 @@ import {
   discardDraft,
   displayTitle,
   encryptProviderKey,
+  exportRequiresUnlock,
   formatPaletteInsert,
   formatSkillInsert,
   getDraft,
   hasPrivacyLock,
+  importBackupRecords,
   ignoreSite,
   isReadOnlyDatabase,
   loadDatabase,
@@ -102,10 +106,12 @@ test('terminal command assets are content-first, categorizable, searchable, and 
   database = cat.database;
   assert.deepEqual(categoriesFor(database, 'command').map((c) => c.name), ['AI Agent 更新']);
 
-  const validated = validateAsset({ type: 'command', content: 'npm install -g @openai/codex@latest', categoryId: cat.category.id });
+  const validated = validateAsset({ type: 'command', content: 'npm install -g @openai/codex@latest', categoryId: cat.category.id }, database);
   assert.equal(validated.type, 'command');
   assert.equal(validated.categoryId, cat.category.id);
   assert.throws(() => validateAsset({ type: 'command', content: '   ' }), /内容不能为空/);
+  assert.throws(() => validateAsset({ type: 'command', content: 'echo ok', categoryId: cat.category.id }), /找不到该分类/);
+  assert.throws(() => validateAsset({ type: 'generic', content: 'body', categoryId: cat.category.id }, database), /找不到该分类/);
 
   const plain = saveAsset(database, { type: 'command', content: 'chrome://restart' }, { now: 1, id: 'cmd-plain' });
   // Content-first: the command itself is the searchable identifier.
@@ -138,6 +144,7 @@ test('terminal command assets are content-first, categorizable, searchable, and 
   assert.deepEqual(searched.map((a) => a.id), ['cmd-cat']);
   const byCategory = assetsFor(database, { type: 'command', categoryId: cat.category.id });
   assert.deepEqual(byCategory.map((a) => a.id), ['cmd-cat']);
+  assert.equal(paletteAssets(database, '', 8).some((asset) => asset.type === 'command'), false);
   assert.equal(paletteAssets(database, '', 8, { types: ['generic', 'skill'] }).some((asset) => asset.type === 'command'), false);
 });
 
@@ -500,7 +507,7 @@ test('paletteAssets types option filters ordinary library entries', () => {
   database = saveAsset(database, { type: 'skill', content: skill }, { id: 's1', now: 2 }).database;
   database = saveAsset(database, { type: 'aigc', content: 'visual' }, { id: 'a1', now: 3 }).database;
   database = saveAsset(database, { type: 'aigc', privacy: 'private', content: 'secret' }, { id: 'p1', now: 4 }).database;
-  assert.deepEqual(paletteAssets(database, '', 8).map((a) => a.id), ['a1', 's1', 'g1']);
+  assert.deepEqual(paletteAssets(database, '', 8).map((a) => a.id), ['s1', 'g1']);
   assert.deepEqual(paletteAssets(database, '', 8, { types: ['generic', 'skill'] }).map((a) => a.id), ['s1', 'g1']);
   assert.deepEqual(paletteAssets(database, '', 8, { types: ['generic', 'skill', 'aigc'] }).map((a) => a.id), ['a1', 's1', 'g1']);
 });
@@ -638,4 +645,69 @@ test('removeAssetAndPackage without a package only persists', async () => {
   const next = await removeAssetAndPackage(database, 'g1', tracker);
   assert.deepEqual(tracker.calls, ['save']);
   assert.equal(next.assets.length, 0);
+});
+
+function memoryStorage() {
+  const stored = {};
+  return {
+    stored,
+    async get(key) { return { [key]: stored[key] }; },
+    async set(value) { Object.assign(stored, value); }
+  };
+}
+
+test('applyDatabaseChange retries so a later patch keeps the earlier asset', async () => {
+  const storage = memoryStorage();
+  assert.equal(await saveDatabase(createEmptyDatabase(), storage), true);
+  await applyDatabaseChange((db) => saveAsset(db, { type: 'generic', content: 'from-background' }, { id: 'bg' }).database, storage);
+
+  const stale = await loadDatabase(storage);
+  await applyDatabaseChange((db) => saveAsset(db, { type: 'generic', content: 'from-popup' }, { id: 'pop' }).database, storage);
+  assert.equal(await saveDatabase(recordAssetUse(stale, 'bg', 9), storage), false);
+
+  await applyDatabaseChange((db) => recordAssetUse(db, 'bg', 9), storage);
+  const final = await loadDatabase(storage);
+  assert.deepEqual(final.assets.map((asset) => asset.id).sort(), ['bg', 'pop']);
+  assert.equal(final.assets.find((asset) => asset.id === 'bg').useCount, 1);
+  assert.ok(final.revision >= 3);
+});
+
+test('recordAssetUse patch does not drop a concurrently saved asset', async () => {
+  const storage = memoryStorage();
+  let database = saveAsset(createEmptyDatabase(), { type: 'generic', content: 'keep-me' }, { id: 'g1' }).database;
+  assert.equal(await saveDatabase(database, storage), true);
+  const stale = await loadDatabase(storage);
+  await applyDatabaseChange((db) => saveAsset(db, { type: 'generic', content: 'parallel' }, { id: 'g2' }).database, storage);
+  assert.equal(await saveDatabase(recordAssetUse(stale, 'g1', 3), storage), false);
+  await applyDatabaseChange((db) => recordAssetUse(db, 'g1', 3), storage);
+  const final = await loadDatabase(storage);
+  assert.deepEqual(final.assets.map((asset) => asset.id).sort(), ['g1', 'g2']);
+  assert.equal(final.assets.find((asset) => asset.id === 'g1').useCount, 1);
+});
+
+test('exportRequiresUnlock only when a lock and private items both exist', async () => {
+  assert.equal(exportRequiresUnlock(createEmptyDatabase()), false);
+  let database = await setPrivacyPassword(createEmptyDatabase(), '123456', webcrypto);
+  assert.equal(exportRequiresUnlock(database), false);
+  database = saveAsset(database, { type: 'aigc', privacy: 'private', content: 'secret visual' }, { id: 'p1' }).database;
+  assert.equal(exportRequiresUnlock(database), true);
+});
+
+test('importBackupRecords writes packages before assets and rolls back on persist failure', async () => {
+  const source = githubSkillDatabase('pkg-src');
+  const backup = createBackup(source, 9, [{ id: 'pkg-src', files: [{ path: 'SKILL.md', size: 20, content: 'eA==' }], fileCount: 1, totalSize: 20 }]);
+  const tracker = trackPackages();
+  tracker.persist = async () => { tracker.calls.push('save'); throw new Error('disk full'); };
+  await assert.rejects(() => importBackupRecords(createEmptyDatabase(), backup, tracker), /disk full/);
+  assert.ok(tracker.calls.some((item) => item.startsWith('put:')));
+  assert.ok(tracker.calls.some((item) => item.startsWith('delete:')));
+  assert.equal(createEmptyDatabase().assets.length, 0);
+});
+
+test('importBackupRecords rejects oversized packages before writing', async () => {
+  const source = githubSkillDatabase('pkg-src');
+  const backup = createBackup(source, 9, [{ id: 'pkg-src', files: [{ path: 'SKILL.md', size: 11 * 1024 * 1024 }], fileCount: 1, totalSize: 11 * 1024 * 1024 }]);
+  const tracker = trackPackages();
+  await assert.rejects(() => importBackupRecords(createEmptyDatabase(), backup, tracker), /大小限制/);
+  assert.deepEqual(tracker.calls, []);
 });

@@ -3,6 +3,7 @@ import {
   addStructureProposal,
   applyAiAssetResult,
   applyAiCategoryGroups,
+  applyDatabaseChange,
   captureSelection,
   categoriesFor,
   commitGithubSkillPackage,
@@ -15,7 +16,6 @@ import {
   READ_ONLY_MESSAGE,
   recordAssetUse,
   removeProviderConfig,
-  saveDatabase,
   saveProviderConfig,
   updateAiSettings,
   verifyPrivacyPassword
@@ -23,8 +23,14 @@ import {
 import { buildAssetOrganizationPrompt, buildGroupingPrompt, buildStructurePrompt, chatCompletion, parseAssetResult, parseGroups } from './ai-organizer.js';
 import { checkGitHubSkillUpdate, collectGitHubSkill, githubSkillUrlError, inspectGitHubSkillUrl, skillContextFromPage } from './github-skill.js';
 import { deletePackage, putPackage } from './package-store.js';
-import { githubFetch } from './github-auth.js';
+import { githubFetch, restrictLocalStorage } from './github-auth.js';
 import { inPlaceAllowsOrigin, isRestrictedTabUrl, livePaletteUpdate, originOfUrl, PALETTE_SCRIPT_FILE, PALETTE_SCRIPT_ID, paletteTypesForUrl, patternsForSites } from './in-place.js';
+
+const CONTENT_SCRIPT_MESSAGES = Object.freeze(['palette-settings', 'palette-query', 'palette-insert']);
+const EXTENSION_PAGE_MESSAGES = Object.freeze([
+  'unlock-ai', 'save-provider', 'delete-provider', 'queue-existing',
+  'process-ai-now', 'collect-github-skill', 'update-github-skill'
+]);
 
 const SESSION_KEY = 'futurecontext.ai-session';
 const AI_ALARM = 'futurecontext.ai-queue';
@@ -152,11 +158,14 @@ async function captureFromMenu(info, tab) {
     try { const [injected] = await chrome.scripting.executeScript({ target: { tabId: tab.id, frameIds: [info.frameId ?? 0] }, func: readPageSelection }); if (String(injected?.result ?? '').trim()) text = injected.result; } catch { /* 无法读取精确选区时退回菜单提供的文本。 */ }
   }
   try {
-    const database = await loadDatabase();
-    if (isReadOnlyDatabase(database)) throw new Error(READ_ONLY_MESSAGE);
-    const saved = captureSelection(database, text);
-    await saveDatabase(saved.database);
-    if (saved.queued) await scheduleAi();
+    let queued = false;
+    await applyDatabaseChange((database) => {
+      if (isReadOnlyDatabase(database)) throw new Error(READ_ONLY_MESSAGE);
+      const saved = captureSelection(database, text);
+      queued = saved.queued;
+      return saved.database;
+    });
+    if (queued) await scheduleAi();
     await flashBadge('✓');
     await notifyTab(tab?.id, '已保存到 FutureContext');
   } catch (error) { await flashBadge('!', error.message || '就地保存失败。'); }
@@ -184,12 +193,16 @@ async function queryPalette(query, sender) {
 async function paletteInsert(id, sender) {
   const database = await loadDatabase();
   if (!inPlaceAllowsOrigin(database.settings.inPlace, senderOrigin(sender))) throw new Error('当前站点未启用就地取用。');
+  const allowed = new Set(paletteTypesForUrl(senderPageUrl(sender)));
   const asset = database.assets.find((item) => item.id === id && item.privacy === 'normal');
   if (!asset) throw new Error('找不到该条目。');
-  if (!isReadOnlyDatabase(database)) await saveDatabase(recordAssetUse(database, id));
+  if (!allowed.has(asset.type)) throw new Error('当前页面不能取用该类型的资产。');
+  if (!isReadOnlyDatabase(database)) await applyDatabaseChange((latest) => recordAssetUse(latest, id));
   return { content: formatPaletteInsert(asset) };
 }
-async function setStatus(database, state, message = '') { const next = updateAiSettings(database, { status: { state, message } }); await saveDatabase(next); return next; }
+async function setStatus(state, message = '') {
+  await applyDatabaseChange((database) => updateAiSettings(database, { status: { state, message } }));
+}
 
 async function sessionForProvider(providerId) {
   const stored = await sessionStorage().get(SESSION_KEY);
@@ -209,39 +222,57 @@ async function processAiQueue() {
   let database = await loadDatabase();
   if (!database.ai.enabled || !database.ai.queue.length) return;
   const provider = activeProvider(database);
-  if (!provider) return setStatus(database, 'paused', '后台整理暂停，检查 Provider 配置。');
+  if (!provider) return setStatus('paused', '后台整理暂停，检查 Provider 配置。');
   const session = await sessionForProvider(provider.id);
-  if (!session?.apiKey) return setStatus(database, 'paused', '后台整理已等待解锁。');
+  if (!session?.apiKey) return setStatus('paused', '后台整理已等待解锁。');
   try {
     const queue = [...database.ai.queue];
     for (const entry of queue) {
+      database = await loadDatabase();
       const asset = database.assets.find((item) => item.id === entry.assetId);
-      if (!asset || !['generic', 'skill'].includes(asset.type) || asset.privacy !== 'normal') { database.ai.queue = database.ai.queue.filter((item) => item.id !== entry.id); continue; }
+      if (!asset || !['generic', 'skill'].includes(asset.type) || asset.privacy !== 'normal') {
+        await applyDatabaseChange((latest) => {
+          const next = updateAiSettings(latest, {});
+          next.ai.queue = next.ai.queue.filter((item) => item.id !== entry.id);
+          return next;
+        });
+        continue;
+      }
       const result = parseAssetResult(await chatCompletion(provider, session.apiKey, buildAssetOrganizationPrompt(asset, categoriesFor(database, asset.type))));
-      database = applyAiAssetResult(database, asset.id, result);
-      database.ai.queue = database.ai.queue.filter((item) => item.id !== entry.id);
+      await applyDatabaseChange((latest) => {
+        const next = applyAiAssetResult(latest, asset.id, result);
+        next.ai.queue = next.ai.queue.filter((item) => item.id !== entry.id);
+        return next;
+      });
     }
+    database = await loadDatabase();
     for (const scope of ['generic', 'skill']) {
+      database = await loadDatabase();
       const open = uncategorized(database, scope);
       if (open.length >= database.ai.thresholds.uncategorized) {
         const response = await chatCompletion(provider, session.apiKey, buildGroupingPrompt(scope, open.slice(0, 50)));
-        database = applyAiCategoryGroups(database, scope, parseGroups(response, open.map((item) => item.id)));
+        const groups = parseGroups(response, open.map((item) => item.id));
+        await applyDatabaseChange((latest) => applyAiCategoryGroups(latest, scope, groups));
       }
     }
+    database = await loadDatabase();
     const elapsedDays = database.ai.lastRestructureAt ? (Date.now() - database.ai.lastRestructureAt) / 86400000 : Infinity;
     if (database.ai.changeCountSinceRestructure >= database.ai.thresholds.restructureChanges && elapsedDays >= database.ai.thresholds.restructureDays) {
       for (const scope of ['generic', 'skill']) {
+        database = await loadDatabase();
         const categories = categoriesFor(database, scope);
         if (!categories.length) continue;
         const response = await chatCompletion(provider, session.apiKey, buildStructurePrompt(scope, categories, database.assets.filter((asset) => asset.type === scope)));
-        if (response?.proposal?.groups?.length) database = addStructureProposal(database, { scope, ...response.proposal });
+        if (response?.proposal?.groups?.length) {
+          const proposal = { scope, ...response.proposal };
+          await applyDatabaseChange((latest) => addStructureProposal(latest, proposal));
+        }
       }
-      database = updateAiSettings(database, { lastRestructureAt: Date.now(), changeCountSinceRestructure: 0 });
+      await applyDatabaseChange((latest) => updateAiSettings(latest, { lastRestructureAt: Date.now(), changeCountSinceRestructure: 0 }));
     }
-    database = updateAiSettings(database, { status: { state: 'idle', message: '' } });
-    await saveDatabase(database);
+    await setStatus('idle', '');
   } catch {
-    await setStatus(database, 'paused', '后台整理暂停，检查 Provider 配置。');
+    await setStatus('paused', '后台整理暂停，检查 Provider 配置。');
   }
 }
 
@@ -252,22 +283,24 @@ async function unlockAi(password) {
   if (!provider) throw new Error('请先保存并选择一个 Provider。');
   const apiKey = await decryptProviderKey(password, provider.secret);
   await sessionStorage().set({ [SESSION_KEY]: { providerId: provider.id, apiKey, unlockedAt: Date.now() } });
-  await saveDatabase(updateAiSettings(database, { status: { state: 'idle', message: '' } }));
+  await applyDatabaseChange((latest) => updateAiSettings(latest, { status: { state: 'idle', message: '' } }));
   await scheduleAi();
   return { providerId: provider.id };
 }
 
 async function queueExisting() {
-  const database = await loadDatabase();
-  if (!database.ai.enabled) throw new Error('请先开启后台 AI 整理。');
-  const queuedIds = new Set(database.ai.queue.map((entry) => entry.assetId));
   let count = 0;
-  for (const asset of database.assets) {
-    if (!['generic', 'skill'].includes(asset.type) || asset.privacy !== 'normal' || queuedIds.has(asset.id)) continue;
-    database.ai.queue.push({ id: crypto.randomUUID(), assetId: asset.id, assetType: asset.type, queuedAt: Date.now() });
-    count += 1;
-  }
-  await saveDatabase(database);
+  await applyDatabaseChange((database) => {
+    if (!database.ai.enabled) throw new Error('请先开启后台 AI 整理。');
+    const queuedIds = new Set(database.ai.queue.map((entry) => entry.assetId));
+    count = 0;
+    for (const asset of database.assets) {
+      if (!['generic', 'skill'].includes(asset.type) || asset.privacy !== 'normal' || queuedIds.has(asset.id)) continue;
+      database.ai.queue.push({ id: crypto.randomUUID(), assetId: asset.id, assetType: asset.type, queuedAt: Date.now() });
+      count += 1;
+    }
+    return database;
+  });
   if (count) await scheduleAi();
   return { count };
 }
@@ -351,21 +384,38 @@ async function updateGitHubSkill(assetId) {
   return { changed: true, asset: saved.asset, hasToken: fetchImpl.hasToken };
 }
 
+function senderIsContentScript(sender) {
+  return Boolean(sender?.tab?.id);
+}
+
+function assertMessageAllowed(type, sender) {
+  if (EXTENSION_PAGE_MESSAGES.includes(type) && senderIsContentScript(sender)) {
+    throw new Error('该操作只能从 FutureContext 扩展页发起。');
+  }
+  if (senderIsContentScript(sender) && !CONTENT_SCRIPT_MESSAGES.includes(type)) {
+    throw new Error('该操作只能从 FutureContext 扩展页发起。');
+  }
+}
+
 export async function handleRuntimeMessage(message, sender = {}) {
+  assertMessageAllowed(message.type, sender);
   if (message.type === 'schedule-ai') { await scheduleAi(); return { ok: true }; }
   if (message.type === 'process-ai-now') { await processAiQueue(); return { ok: true }; }
   if (message.type === 'unlock-ai') return unlockAi(message.password);
   if (message.type === 'ai-session-status') { const database = await loadDatabase(); const provider = activeProvider(database); return { unlocked: Boolean(provider && await sessionForProvider(provider.id)), providerId: provider?.id ?? null }; }
   if (message.type === 'save-provider') {
-    const database = await loadDatabase();
-    const result = await saveProviderConfig(database, message.provider, message.password);
-    const saved = result.database.ai.providers.find((provider) => provider.id === result.provider.id);
-    const apiKey = await decryptProviderKey(message.password, saved.secret);
-    await saveDatabase(result.database);
-    await sessionStorage().set({ [SESSION_KEY]: { providerId: saved.id, apiKey, unlockedAt: Date.now() } });
-    return result.provider;
+    let provider;
+    await applyDatabaseChange(async (database) => {
+      const result = await saveProviderConfig(database, message.provider, message.password);
+      const saved = result.database.ai.providers.find((item) => item.id === result.provider.id);
+      const apiKey = await decryptProviderKey(message.password, saved.secret);
+      await sessionStorage().set({ [SESSION_KEY]: { providerId: saved.id, apiKey, unlockedAt: Date.now() } });
+      provider = result.provider;
+      return result.database;
+    });
+    return provider;
   }
-  if (message.type === 'delete-provider') { const database = await loadDatabase(); await saveDatabase(removeProviderConfig(database, message.id)); await sessionStorage().remove(SESSION_KEY); return { ok: true }; }
+  if (message.type === 'delete-provider') { await applyDatabaseChange((database) => removeProviderConfig(database, message.id)); await sessionStorage().remove(SESSION_KEY); return { ok: true }; }
   if (message.type === 'clear-ai-session') { await sessionStorage().remove(SESSION_KEY); return { ok: true }; }
   if (message.type === 'test-provider') return testProvider(message.id);
   if (message.type === 'queue-existing') return queueExisting();
@@ -383,8 +433,8 @@ export async function handleRuntimeMessage(message, sender = {}) {
 }
 
 chrome.alarms.onAlarm.addListener((alarm) => { if (alarm.name === AI_ALARM) void processAiQueue(); });
-chrome.runtime.onInstalled.addListener(() => { ensureContextMenu(); void syncContentScripts(); });
-chrome.runtime.onStartup.addListener(() => { void sessionStorage().remove(SESSION_KEY); void syncContentScripts(); });
+chrome.runtime.onInstalled.addListener(() => { void restrictLocalStorage(); ensureContextMenu(); void syncContentScripts(); });
+chrome.runtime.onStartup.addListener(() => { void restrictLocalStorage(); void sessionStorage().remove(SESSION_KEY); void syncContentScripts(); });
 chrome.contextMenus.onClicked.addListener((info, tab) => { if (info.menuItemId === CAPTURE_MENU_ID) void captureFromMenu(info, tab); });
 chrome.commands.onCommand.addListener((command) => { if (command === 'open-palette') void openPaletteInActiveTab(); });
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

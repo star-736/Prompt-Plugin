@@ -81,6 +81,18 @@ test('unknown message type is rejected', async () => {
   await assert.rejects(() => handleRuntimeMessage({ type: 'nope' }), /未知/);
 });
 
+test('content scripts cannot call extension-page messages', async () => {
+  const tabSender = githubSender('https://chatgpt.com/c/1');
+  await assert.rejects(() => handleRuntimeMessage({ type: 'unlock-ai', password: '123456' }, tabSender), /扩展页/);
+  await assert.rejects(() => handleRuntimeMessage({ type: 'save-provider', provider: {}, password: '123456' }, tabSender), /扩展页/);
+  await assert.rejects(() => handleRuntimeMessage({ type: 'delete-provider', id: 'p1' }, tabSender), /扩展页/);
+  await assert.rejects(() => handleRuntimeMessage({ type: 'queue-existing' }, tabSender), /扩展页/);
+  await assert.rejects(() => handleRuntimeMessage({ type: 'process-ai-now' }, tabSender), /扩展页/);
+  await assert.rejects(() => handleRuntimeMessage({ type: 'collect-github-skill' }, tabSender), /扩展页/);
+  await assert.rejects(() => handleRuntimeMessage({ type: 'update-github-skill', assetId: 'x' }, tabSender), /扩展页/);
+  await assert.rejects(() => handleRuntimeMessage({ type: 'sync-sites' }, tabSender), /扩展页/);
+});
+
 test('schedule-ai, notice, and session messages work', async () => {
   assert.deepEqual(await handleRuntimeMessage({ type: 'schedule-ai' }), { ok: true });
   stub.session[NOTICE_KEY] = { message: '已保存', at: 1 };
@@ -94,6 +106,8 @@ test('palette settings, query, and insert respect site coverage and skill prefix
   database = saveAsset(database, { type: 'generic', title: '周报标题', content: '总结本周工作' }, { id: 'g1', now: 1 }).database;
   database = saveAsset(database, { type: 'skill', content: skill }, { id: 's1', now: 2 }).database;
   database = saveAsset(database, { type: 'aigc', title: '场景', content: '电影感雨夜' }, { id: 'a1', now: 3 }).database;
+  database = saveAsset(database, { type: 'command', content: 'npm install -g @openai/codex' }, { id: 'c1', now: 4 }).database;
+  database = enableSites(database, ['https://chatgpt.com', 'https://grok.com']);
   seedDatabase(stub.local, database);
   const sender = githubSender('https://chatgpt.com/c/1');
   const settings = await handleRuntimeMessage({ type: 'palette-settings' }, sender);
@@ -108,12 +122,18 @@ test('palette settings, query, and insert respect site coverage and skill prefix
   assert.match(inserted.content, /基于以下 skill/);
   assert.equal(inserted.content.startsWith('基于以下 skill 辅助我解决问题\n---'), true);
   assert.equal(inserted.content.includes('Email reviewer\n---'), false);
-  const aigcInserted = await handleRuntimeMessage({ type: 'palette-insert', id: 'a1' }, sender);
+  await assert.rejects(() => handleRuntimeMessage({ type: 'palette-insert', id: 'a1' }, sender), /不能取用该类型/);
+  await assert.rejects(() => handleRuntimeMessage({ type: 'palette-insert', id: 'c1' }, sender), /不能取用该类型/);
+  const imagine = githubSender('https://grok.com/imagine');
+  await assert.rejects(() => handleRuntimeMessage({ type: 'palette-insert', id: 'g1' }, imagine), /不能取用该类型/);
+  await assert.rejects(() => handleRuntimeMessage({ type: 'palette-insert', id: 's1' }, imagine), /不能取用该类型/);
+  await assert.rejects(() => handleRuntimeMessage({ type: 'palette-insert', id: 'c1' }, imagine), /不能取用该类型/);
+  const aigcInserted = await handleRuntimeMessage({ type: 'palette-insert', id: 'a1' }, imagine);
   assert.equal(aigcInserted.content, '电影感雨夜');
-  assert.notEqual(aigcInserted.content, '场景\n电影感雨夜');
   await assert.rejects(() => handleRuntimeMessage({ type: 'palette-insert', id: 'missing' }, sender), /找不到/);
   await assert.rejects(() => handleRuntimeMessage({ type: 'palette-insert', id: 'g1' }, githubSender('https://www.douyin.com/')), /未启用/);
   assert.deepEqual(await handleRuntimeMessage({ type: 'palette-query', query: '' }, githubSender('https://www.douyin.com/')), []);
+  assert.equal((await handleRuntimeMessage({ type: 'palette-query', query: '' }, sender)).some((item) => item.id === 'c1'), false);
 });
 
 test('sync-sites registers and unregisters the palette content script', async () => {
@@ -194,6 +214,7 @@ test('chrome listeners schedule AI, menus, and the palette shortcut', async () =
   stub.listeners.alarm[0]({ name: 'other' });
   stub.listeners.installed[0]();
   stub.listeners.startup[0]();
+  assert.ok(stub.accessLevels.filter((item) => item.accessLevel === 'TRUSTED_CONTEXTS').length >= 2);
   stub.listeners.contextClicked[0]({ menuItemId: 'futurecontext-capture-selection', selectionText: 'captured text' }, { id: 1, url: 'https://chatgpt.com/' });
   stub.listeners.contextClicked[0]({ menuItemId: 'futurecontext-capture-selection', selectionText: '   ' }, { id: 1, url: 'https://chatgpt.com/' });
   stub.listeners.contextClicked[0]({ menuItemId: 'other' }, { id: 1 });

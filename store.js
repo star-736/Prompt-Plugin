@@ -1,3 +1,6 @@
+import { DEFAULT_PALETTE_TYPES } from './in-place.js';
+import { assertPackageLimits } from './package-store.js';
+
 export const APP_STORAGE_KEY = 'futurecontext.v1';
 export const BACKUP_FORMAT = 'futurecontext.backup';
 export const ASSET_TYPES = Object.freeze(['generic', 'skill', 'aigc', 'command']);
@@ -7,6 +10,7 @@ export const CURRENT_DATABASE_VERSION = 2;
 export const SORT_OPTIONS = Object.freeze({ updated: '最近编辑', lastUsed: '最近取用', mostUsed: '最常取用' });
 export const USAGE_LOG_DAYS = 90;
 export const CAPTURE_LIMIT = 100000;
+export const SAVE_CONFLICT_ATTEMPTS = 8;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -58,8 +62,13 @@ function normalizeAsset(asset) {
   return { ...asset, useCount: Number.isFinite(useCount) && useCount > 0 ? Math.floor(useCount) : 0, lastUsedAt: Number.isFinite(lastUsedAt) && lastUsedAt > 0 ? lastUsedAt : null, pinned: asset.privacy === 'normal' && asset.pinned === true };
 }
 
+export function databaseRevision(database) {
+  const revision = Number(database?.revision);
+  return Number.isFinite(revision) && revision > 0 ? Math.floor(revision) : 0;
+}
+
 export function createEmptyDatabase() {
-  return { version: CURRENT_DATABASE_VERSION, lock: { passwordDigest: null }, settings: normalizeSettings(), ai: normalizeAi(), usage: normalizeUsage(), assets: [], categories: [], drafts: {} };
+  return { version: CURRENT_DATABASE_VERSION, revision: 0, lock: { passwordDigest: null }, settings: normalizeSettings(), ai: normalizeAi(), usage: normalizeUsage(), assets: [], categories: [], drafts: {} };
 }
 
 // 比当前代码更新的版本号不会被当成空库：数据原样保留、只读，等待用户升级扩展（ADR 0006）。
@@ -70,7 +79,7 @@ export function normalizeDatabase(value) {
   const newer = value && typeof value === 'object' && isReadOnlyDatabase(value);
   if (!value || typeof value !== 'object' || (![1, 2].includes(value.version) && !newer)) return empty;
   return {
-    ...empty, ...value, version: newer ? value.version : CURRENT_DATABASE_VERSION, lock: { ...empty.lock, ...(value.lock ?? {}) }, settings: normalizeSettings(value.settings), ai: normalizeAi(value.ai), usage: normalizeUsage(value.usage),
+    ...empty, ...value, version: newer ? value.version : CURRENT_DATABASE_VERSION, revision: databaseRevision(value), lock: { ...empty.lock, ...(value.lock ?? {}) }, settings: normalizeSettings(value.settings), ai: normalizeAi(value.ai), usage: normalizeUsage(value.usage),
     assets: Array.isArray(value.assets) ? value.assets.map(normalizeAsset) : [], categories: Array.isArray(value.categories) ? value.categories : [], drafts: value.drafts && typeof value.drafts === 'object' ? value.drafts : {}
   };
 }
@@ -157,11 +166,13 @@ export function formatSkillInsert(text, type) {
 export function formatPaletteInsert(asset) {
   return formatSkillInsert(asset?.content ?? '', asset?.type);
 }
-export function validateAsset(input) {
-  const type = input.type; const privacy = input.privacy ?? 'normal'; scopeFor(type, privacy);
+export function validateAsset(input, database = null) {
+  const type = input.type; const privacy = input.privacy ?? 'normal'; const scope = scopeFor(type, privacy);
   const content = String(input.content ?? ''); if (!content.trim()) throw new Error('内容不能为空。');
   const metadata = type === 'skill' ? parseSkillMetadata(content) : null;
-  return { type, privacy, title: type === 'skill' ? metadata.name : normalizedName(input.title), content, categoryId: type === 'aigc' || privacy === 'private' ? null : input.categoryId || null, skillDescription: metadata?.description ?? null };
+  const categoryId = type === 'aigc' || privacy === 'private' ? null : input.categoryId || null;
+  if (categoryId && !database?.categories?.some((category) => category.id === categoryId && category.scope === scope)) throw new Error('找不到该分类。');
+  return { type, privacy, title: type === 'skill' ? metadata.name : normalizedName(input.title), content, categoryId, skillDescription: metadata?.description ?? null };
 }
 function titleSource(existing, asset) { if (asset.type !== 'generic') return null; if (!existing) return asset.title ? 'manual' : 'none'; return asset.title === existing.title ? (existing.titleSource ?? (asset.title ? 'manual' : 'none')) : (asset.title ? 'manual' : 'none'); }
 function categorySource(existing, asset) { if (!['generic', 'skill', 'command'].includes(asset.type)) return null; if (!existing) return asset.categoryId ? 'manual' : 'none'; return asset.categoryId === existing.categoryId ? (existing.categorySource ?? (asset.categoryId ? 'manual' : 'none')) : (asset.categoryId ? 'manual' : 'none'); }
@@ -173,7 +184,7 @@ function enqueueIfEligible(next, existing, asset, now) {
 }
 
 export function saveAsset(database, input, { now = Date.now(), id = newId() } = {}) {
-  const next = normalizeDatabase(clone(database)); const validated = validateAsset(input);
+  const next = normalizeDatabase(clone(database)); const validated = validateAsset(input, next);
   const existingIndex = input.id ? next.assets.findIndex((asset) => asset.id === input.id) : -1;
   if (input.id && existingIndex < 0) throw new Error('找不到要更新的条目。');
   const existing = existingIndex >= 0 ? next.assets[existingIndex] : null;
@@ -264,14 +275,14 @@ export function usageSummary(database, now = Date.now()) {
   return { week: within(7), month: within(30), total: database.assets.reduce((sum, asset) => sum + (asset.useCount ?? 0), 0), sites: database.settings?.inPlace?.sites?.length ?? 0 };
 }
 
-// 取用面板：搜索普通库；私密库永不出现。types 缺省时全部普通库类型都会出现（含终端指令）；生产路径显式传入 types，不含 command。
+// 取用面板：搜索普通库；私密库永不出现。types 缺省时只用聊天页默认类型（generic + skill），不含 command / aigc。
 export function paletteAssets(database, query = '', limit = 8, { types } = {}) {
   const needle = String(query ?? '').trim().replace(/\s+/g, ' ').toLocaleLowerCase(); const names = categoryNameMap(database);
-  const allowed = Array.isArray(types) ? new Set(types.filter((type) => ASSET_TYPES.includes(type))) : null;
+  const allowed = new Set((Array.isArray(types) ? types : DEFAULT_PALETTE_TYPES).filter((type) => ASSET_TYPES.includes(type)));
   const scored = [];
   for (const asset of database.assets) {
     if (asset.privacy !== 'normal') continue;
-    if (allowed && !allowed.has(asset.type)) continue;
+    if (!allowed.has(asset.type)) continue;
     let score = 0;
     if (needle) {
       if (displayTitle(asset).toLocaleLowerCase().includes(needle)) score = 2;
@@ -313,7 +324,7 @@ export function mergeBackup(database, backupValue, { now = Date.now(), idFactory
   const backup = parseBackup(backupValue); const next = normalizeDatabase(clone(database)); const categoryIds = new Map(); const known = new Map(next.categories.map((category) => [categoryKey(category.scope, category.name), category]));
   for (const category of backup.categories) { if (!CATEGORY_SCOPES.includes(category.scope) || !normalizedName(category.name)) continue; const key = categoryKey(category.scope, category.name); let target = known.get(key); if (!target) { target = { id: idFactory(), scope: category.scope, name: normalizedName(category.name), createdAt: now, createdBy: category.createdBy ?? 'human' }; next.categories.push(target); known.set(key, target); } categoryIds.set(category.id, target.id); }
   const fingerprints = new Set(next.assets.map((asset) => assetFingerprint(asset, categoryNameMap(next)))); const packageImports = []; let imported = 0; let skipped = 0;
-  for (const source of backup.assets) try { const categoryId = source.type === 'aigc' || source.privacy === 'private' ? source.categoryId ?? null : (categoryIds.get(source.categoryId) ?? null); const asset = validateAsset({ ...source, categoryId }); const candidate = { ...asset, title: source.type === 'aigc' ? (source.title ?? '') : asset.title, categoryId: source.type === 'aigc' ? (source.categoryId ?? null) : asset.categoryId, skillPackage: source.skillPackage ?? null }; const fingerprint = assetFingerprint(candidate, categoryNameMap(next)); if (fingerprints.has(fingerprint)) { skipped += 1; continue; } if (candidate.skillPackage?.packageId) { const targetPackageId = idFactory(); packageImports.push({ sourcePackageId: candidate.skillPackage.packageId, targetPackageId }); candidate.skillPackage = { ...candidate.skillPackage, packageId: targetPackageId }; } next.assets.push(normalizeAsset({ ...candidate, id: idFactory(), createdAt: source.createdAt ?? now, updatedAt: source.updatedAt ?? now, titleSource: source.titleSource ?? (candidate.title ? 'manual' : 'none'), categorySource: source.categorySource ?? (candidate.categoryId ? 'manual' : 'none'), useCount: source.useCount, lastUsedAt: source.lastUsedAt, pinned: source.pinned })); fingerprints.add(fingerprint); imported += 1; } catch { skipped += 1; }
+  for (const source of backup.assets) try { const categoryId = source.type === 'aigc' || source.privacy === 'private' ? source.categoryId ?? null : (categoryIds.get(source.categoryId) ?? null); const asset = validateAsset({ ...source, categoryId }, next); const candidate = { ...asset, title: source.type === 'aigc' ? (source.title ?? '') : asset.title, categoryId: source.type === 'aigc' ? (source.categoryId ?? null) : asset.categoryId, skillPackage: source.skillPackage ?? null }; const fingerprint = assetFingerprint(candidate, categoryNameMap(next)); if (fingerprints.has(fingerprint)) { skipped += 1; continue; } if (candidate.skillPackage?.packageId) { const targetPackageId = idFactory(); packageImports.push({ sourcePackageId: candidate.skillPackage.packageId, targetPackageId }); candidate.skillPackage = { ...candidate.skillPackage, packageId: targetPackageId }; } next.assets.push(normalizeAsset({ ...candidate, id: idFactory(), createdAt: source.createdAt ?? now, updatedAt: source.updatedAt ?? now, titleSource: source.titleSource ?? (candidate.title ? 'manual' : 'none'), categorySource: source.categorySource ?? (candidate.categoryId ? 'manual' : 'none'), useCount: source.useCount, lastUsedAt: source.lastUsedAt, pinned: source.pinned })); fingerprints.add(fingerprint); imported += 1; } catch { skipped += 1; }
   return { database: next, imported, skipped, packages: backup.packages, packageImports };
 }
 export function saveGithubSkillAsset(database, packageInfo, { now = Date.now(), id = newId(), updateAssetId = null } = {}) {
@@ -326,11 +337,110 @@ export function saveGithubSkillAsset(database, packageInfo, { now = Date.now(), 
   enqueueIfEligible(next, current, asset, now);
   return { database: next, asset, duplicate: false, queued: next.ai.queue.some((entry) => entry.assetId === asset.id) };
 }
-export async function loadDatabase(storage = chrome.storage.local) { const result = await storage.get(APP_STORAGE_KEY); return normalizeDatabase(result[APP_STORAGE_KEY]); }
+export async function loadDatabase(storage = chrome.storage.local) {
+  const result = await storage.get?.(APP_STORAGE_KEY) ?? {};
+  return normalizeDatabase(result[APP_STORAGE_KEY]);
+}
 export const READ_ONLY_MESSAGE = '数据来自更新版本的 FutureContext，请升级扩展。当前为只读，所有修改都不会保存。';
+export const SAVE_CONFLICT_MESSAGE = '保存冲突，请重试。';
 export async function saveDatabase(database, storage = chrome.storage.local) {
   if (isReadOnlyDatabase(database)) return false;
-  await storage.set({ [APP_STORAGE_KEY]: normalizeDatabase(database) }); return true;
+  const stored = await loadDatabase(storage);
+  if (isReadOnlyDatabase(stored)) return false;
+  if (databaseRevision(stored) !== databaseRevision(database)) return false;
+  const next = normalizeDatabase(clone(database));
+  next.revision = databaseRevision(stored) + 1;
+  await storage.set({ [APP_STORAGE_KEY]: next });
+  return true;
+}
+
+export async function applyDatabaseChange(mutator, storage = chrome.storage.local, { attempts = SAVE_CONFLICT_ATTEMPTS } = {}) {
+  for (let index = 0; index < attempts; index += 1) {
+    const current = await loadDatabase(storage);
+    if (isReadOnlyDatabase(current)) return false;
+    const produced = await mutator(current);
+    if (produced == null) return true;
+    const next = produced.database ?? produced;
+    if (isReadOnlyDatabase(next)) return false;
+    next.revision = databaseRevision(current);
+    if (await saveDatabase(next, storage)) return true;
+  }
+  throw new Error(SAVE_CONFLICT_MESSAGE);
+}
+
+export function setLastNormalTab(database, tab) {
+  const next = normalizeDatabase(clone(database));
+  if (ASSET_TYPES.includes(tab)) next.settings.lastNormalTab = tab;
+  return next;
+}
+
+export function hasPrivateAssets(database) {
+  return (database?.assets ?? []).some((asset) => asset.privacy === 'private');
+}
+
+export function exportRequiresUnlock(database) {
+  return hasPrivacyLock(database) && hasPrivateAssets(database);
+}
+
+async function rollbackPackages(ids, deletePackage) {
+  for (const id of ids) {
+    try { await deletePackage(id); } catch { /* 回滚尽力。 */ }
+  }
+}
+
+export async function importBackupRecords(database, backupValue, { putPackage, deletePackage, persist, now = Date.now(), idFactory } = {}) {
+  const prepare = (base) => {
+    const result = mergeBackup(base, backupValue, { now, idFactory });
+    const records = [];
+    for (const mapping of result.packageImports) {
+      const source = (result.packages ?? []).find((item) => item.id === mapping.sourcePackageId);
+      if (!source) continue;
+      assertPackageLimits((source.files ?? []).map((file) => ({ path: file.path, size: file.size })));
+      records.push({ ...source, id: mapping.targetPackageId });
+    }
+    return { result, records };
+  };
+  const writeRecords = async (records) => {
+    const written = [];
+    try {
+      for (const record of records) {
+        await putPackage(record);
+        written.push(record.id);
+      }
+      return written;
+    } catch (error) {
+      await rollbackPackages(written, deletePackage);
+      throw error;
+    }
+  };
+  if (persist) {
+    const prepared = prepare(database);
+    const written = await writeRecords(prepared.records);
+    try {
+      if (!await persist(prepared.result.database)) throw new Error(READ_ONLY_MESSAGE);
+      return prepared.result;
+    } catch (error) {
+      await rollbackPackages(written, deletePackage);
+      throw error;
+    }
+  }
+  let lastWritten = [];
+  try {
+    let imported = null;
+    const saved = await applyDatabaseChange(async (latest) => {
+      await rollbackPackages(lastWritten, deletePackage);
+      lastWritten = [];
+      const prepared = prepare(latest);
+      lastWritten = await writeRecords(prepared.records);
+      imported = prepared.result;
+      return prepared.result.database;
+    });
+    if (!saved) throw new Error(READ_ONLY_MESSAGE);
+    return imported;
+  } catch (error) {
+    await rollbackPackages(lastWritten, deletePackage);
+    throw error;
+  }
 }
 
 function assertWritableDatabase(database) {

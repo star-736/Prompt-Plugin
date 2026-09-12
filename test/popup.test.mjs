@@ -177,7 +177,7 @@ test('search, sort, category filter, pin, and copy', async () => {
   click('[data-category="work"]');
   await flush();
   click('[data-action="toggle-pin"]');
-  await waitFor(() => /置顶/.test(toastText()) || document.querySelector('.pin-button'));
+  await waitFor(() => /已置顶|已取消置顶/.test(toastText()));
   click('[data-action="copy-asset"]');
   await waitFor(() => /复制/.test(toastText()));
 });
@@ -523,6 +523,23 @@ test('read-only import refuses to overwrite the database', async () => {
   input.dispatchEvent(new window.Event('change', { bubbles: true }));
   await waitFor(() => /只读/.test(toastText()));
   assert.deepEqual(stub.local['futurecontext.v1'], before);
+});
+
+test('category picker is hidden on AIGC and shown on terminal commands', async () => {
+  click('[data-tab="aigc"]');
+  await waitFor(() => document.querySelector('[data-privacy="normal"]'));
+  assert.equal(document.querySelector('[data-action="toggle-category-menu"]'), null);
+  click('[data-tab="command"]');
+  await waitFor(() => document.querySelector('[data-tab="command"].is-active'));
+  assert.ok(document.querySelector('[data-action="toggle-category-menu"]'));
+});
+
+test('export skips unlock when there is no private content', async () => {
+  click('[data-action="settings"]');
+  await waitFor(() => document.querySelector('[data-action="export-backup"]'));
+  click('[data-action="export-backup"]');
+  await waitFor(() => document.querySelector('#confirm-title')?.textContent === '导出全部数据');
+  assert.notEqual(document.querySelector('#confirm-title')?.textContent, '需要解锁私密库');
 });
 
 test('invalid backup reports an error and preserves existing data', async () => {

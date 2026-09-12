@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   githubToken,
   saveGitHubToken,
+  restrictLocalStorage,
   githubFetch,
   redactGitHubHeaders,
   formatGitHubFetchLogLine,
@@ -31,6 +32,13 @@ test('token saves only after restricting access, is replaceable and removable, a
   await saveGitHubToken('', s);
   assert.equal(await githubToken(s), '');
 });
+test('restrictLocalStorage can run before any token is saved', async () => {
+  const s = storage();
+  await restrictLocalStorage(s);
+  assert.deepEqual(s.events, [{ accessLevel: 'TRUSTED_CONTEXTS' }]);
+  assert.deepEqual(s.data, {});
+});
+
 test('failed access restriction never persists a token', async () => {
   const s = storage();
   s.setAccessLevel = async () => { throw new Error('denied'); };

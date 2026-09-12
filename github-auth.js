@@ -7,6 +7,10 @@ export async function githubToken(storage = chrome.storage.local) {
   return typeof stored[TOKEN_KEY] === 'string' ? stored[TOKEN_KEY] : '';
 }
 
+export async function restrictLocalStorage(storage = chrome.storage.local) {
+  await storage.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
+}
+
 export async function saveGitHubToken(value, storage = chrome.storage.local) {
   const token = String(value ?? '').trim();
   if (token && (!/^[A-Za-z0-9_]+$/.test(token) || token.length > 512)) {
@@ -15,7 +19,7 @@ export async function saveGitHubToken(value, storage = chrome.storage.local) {
   if (!token) { await storage.remove(TOKEN_KEY); return; }
   // Content scripts do not need storage access; they use background messages.
   // Fail closed if the browser cannot restrict access to extension contexts.
-  await storage.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
+  await restrictLocalStorage(storage);
   await storage.set({ [TOKEN_KEY]: token });
 }
 

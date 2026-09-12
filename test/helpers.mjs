@@ -100,18 +100,27 @@ export function createMemoryIndexedDB() {
   };
 }
 
-function storageArea(bucket) {
+function storageArea(bucket, { area = 'local', emit, accessLevels } = {}) {
   return {
-    async setAccessLevel() {},
+    async setAccessLevel(value) {
+      accessLevels?.push({ area, accessLevel: value?.accessLevel ?? value });
+    },
     async get(keys) {
       if (keys == null) return { ...bucket };
       if (typeof keys === 'string') return { [keys]: bucket[keys] };
       if (Array.isArray(keys)) return Object.fromEntries(keys.map((key) => [key, bucket[key]]));
       return Object.fromEntries(Object.keys(keys).map((key) => [key, bucket[key] ?? keys[key]]));
     },
-    async set(values) { Object.assign(bucket, values); },
+    async set(values) {
+      const changes = Object.fromEntries(Object.entries(values).map(([key, value]) => [key, { oldValue: bucket[key], newValue: value }]));
+      Object.assign(bucket, values);
+      emit?.(changes, area);
+    },
     async remove(keys) {
-      for (const key of Array.isArray(keys) ? keys : [keys]) delete bucket[key];
+      const list = Array.isArray(keys) ? keys : [keys];
+      const changes = Object.fromEntries(list.map((key) => [key, { oldValue: bucket[key], newValue: undefined }]));
+      for (const key of list) delete bucket[key];
+      emit?.(changes, area);
     }
   };
 }
@@ -122,6 +131,7 @@ export function createChromeStub(options = {}) {
   const granted = new Set(options.grantedOrigins ?? []);
   const registered = [];
   const alarms = [];
+  const accessLevels = [];
   const listeners = {
     alarm: [],
     installed: [],
@@ -129,7 +139,11 @@ export function createChromeStub(options = {}) {
     contextClicked: [],
     command: [],
     message: [],
-    paletteMessage: []
+    paletteMessage: [],
+    storageChanged: []
+  };
+  const emitStorage = (changes, area) => {
+    listeners.storageChanged.forEach((listener) => listener(changes, area));
   };
   const tabs = options.tabs ?? [{ id: 1, url: 'https://chatgpt.com/', active: true, windowId: 1 }];
   const executeScript = options.executeScript ?? (async ({ func, args = [] }) => {
@@ -138,7 +152,14 @@ export function createChromeStub(options = {}) {
   });
 
   const chrome = {
-    storage: { local: storageArea(local), session: storageArea(session) },
+    storage: {
+      local: storageArea(local, { area: 'local', emit: emitStorage, accessLevels }),
+      session: storageArea(session, { area: 'session', emit: emitStorage, accessLevels }),
+      onChanged: {
+        addListener(listener) { listeners.storageChanged.push(listener); },
+        removeListener(listener) { listeners.storageChanged = listeners.storageChanged.filter((item) => item !== listener); }
+      }
+    },
     permissions: {
       async contains({ origins = [] }) { return origins.every((origin) => granted.has(origin) || [...granted].some((item) => item === origin)); },
       async request({ origins = [] }) { origins.forEach((origin) => granted.add(origin)); return true; },
@@ -210,7 +231,7 @@ export function createChromeStub(options = {}) {
 
   globalThis.chrome = chrome;
   globalThis.indexedDB = options.indexedDB ?? createMemoryIndexedDB();
-  return { chrome, local, session, granted, registered, alarms, listeners, tabs };
+  return { chrome, local, session, granted, registered, alarms, listeners, tabs, accessLevels };
 }
 
 function responsePending() { return false; }

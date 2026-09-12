@@ -35,28 +35,59 @@ function field() {
   return el;
 }
 
+function trusted(event) {
+  const impl = event[Object.getOwnPropertySymbols(event).find((symbol) => String(symbol) === 'Symbol(impl)')];
+  if (impl) {
+    Object.defineProperty(impl, 'isTrusted', {
+      configurable: true,
+      enumerable: true,
+      get: () => true,
+      set() {}
+    });
+  }
+  return event;
+}
+
+function dispatchTrusted(target, event) {
+  target.dispatchEvent(trusted(event));
+  return event;
+}
+
+function paletteShadow() {
+  return window.__futureContextPalette?.getShadow?.();
+}
 
 test('palette arms and opens from shortcut on a focused textarea', async () => {
   const el = field();
   el.value = 'hello';
   el.setSelectionRange(5, 5);
   assert.equal(window.__futureContextPalette.openFromShortcut(), true);
-  await waitFor(() => document.querySelector('.fc-palette, textarea'));
+  await waitFor(() => paletteShadow()?.querySelector('.fc-palette, .fc-search, .fc-item, .fc-empty'));
   const host = document.querySelector('div');
   assert.ok(host);
+  assert.equal(host.shadowRoot, null);
 });
 
-test('// trigger opens the inline palette and insert writes into the field', async () => {
+test('untrusted input cannot open the inline palette', async () => {
+  const el = field();
+  el.value = '//';
+  el.setSelectionRange(2, 2);
+  el.dispatchEvent(new window.Event('input', { bubbles: true }));
+  await flush(40);
+  assert.equal(paletteShadow()?.querySelector('.fc-item') ?? null, null);
+});
+
+test('trusted // trigger opens the inline palette and insert writes into the field', async () => {
   window.__futureContextPalette.destroy();
   stub.listeners.message[0]?.({ type: 'fc-settings', enabled: true, triggerEnabled: true });
   const el = field();
   el.value = '//';
   el.setSelectionRange(2, 2);
-  el.dispatchEvent(new window.Event('input', { bubbles: true }));
-  await waitFor(() => [...document.querySelectorAll('*')].some((node) => node.shadowRoot?.querySelector?.('.fc-item')));
-  const panel = [...document.querySelectorAll('div')].map((node) => node.shadowRoot).find((shadow) => shadow?.querySelector('.fc-item'));
+  dispatchTrusted(el, new window.Event('input', { bubbles: true }));
+  await waitFor(() => paletteShadow()?.querySelector('.fc-item'));
+  const panel = paletteShadow();
   assert.ok(panel);
-  panel.querySelector('.fc-item').dispatchEvent(new window.MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+  dispatchTrusted(panel.querySelector('.fc-item'), new window.MouseEvent('mousedown', { bubbles: true, cancelable: true }));
   await flush(80);
   assert.equal(el.value, '写一封邮件');
 });
@@ -66,10 +97,10 @@ test('keyboard navigation, escape, and settings/destroy messages', async () => {
   const el = field();
   el.focus();
   window.__futureContextPalette.openFromShortcut();
-  await waitFor(() => [...document.querySelectorAll('div')].some((node) => node.shadowRoot?.querySelector?.('.fc-search, .fc-item, .fc-empty')));
-  window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
-  window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
-  window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  await waitFor(() => paletteShadow()?.querySelector('.fc-search, .fc-item, .fc-empty'));
+  dispatchTrusted(window, new window.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+  dispatchTrusted(window, new window.KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
+  dispatchTrusted(window, new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
   stub.listeners.message.forEach((listener) => listener({ type: 'fc-ping' }));
   stub.listeners.message.forEach((listener) => listener({ type: 'fc-toast', text: '已保存到 FutureContext' }));
   stub.listeners.message.forEach((listener) => listener({ type: 'fc-open-palette' }));
@@ -85,10 +116,6 @@ function rearm(triggerEnabled = true) {
   stub.listeners.message.forEach((listener) => listener({ type: 'fc-settings', enabled: true, triggerEnabled }));
 }
 
-function paletteShadow() {
-  return [...document.querySelectorAll('div')].map((node) => node.shadowRoot).find((shadow) => shadow?.querySelector('.fc-palette, .fc-item, .fc-search, .fc-empty'));
-}
-
 test('Enter inserts, slash intercept, beforeinput, and trigger-off', async () => {
   rearm(true);
   const el = field();
@@ -97,18 +124,18 @@ test('Enter inserts, slash intercept, beforeinput, and trigger-off', async () =>
   el.focus();
   assert.equal(window.__futureContextPalette.openFromShortcut(), true);
   await waitFor(() => paletteShadow()?.querySelectorAll('.fc-item').length === 2);
-  window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+  dispatchTrusted(window, new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
   await waitFor(() => el.value === 'hello写一封邮件');
   el.value = '/';
   el.setSelectionRange(1, 1);
-  el.dispatchEvent(new window.KeyboardEvent('keydown', { key: '/', bubbles: true, cancelable: true }));
-  el.dispatchEvent(new window.InputEvent('beforeinput', { bubbles: true, cancelable: true, data: '/', inputType: 'insertText' }));
-  el.dispatchEvent(new window.KeyboardEvent('keyup', { key: '/', bubbles: true, cancelable: true }));
+  dispatchTrusted(el, new window.KeyboardEvent('keydown', { key: '/', bubbles: true, cancelable: true }));
+  dispatchTrusted(el, new window.InputEvent('beforeinput', { bubbles: true, cancelable: true, data: '/', inputType: 'insertText' }));
+  dispatchTrusted(el, new window.KeyboardEvent('keyup', { key: '/', bubbles: true, cancelable: true }));
   await flush(20);
   rearm(false);
   el.value = '//';
   el.setSelectionRange(2, 2);
-  el.dispatchEvent(new window.Event('input', { bubbles: true }));
+  dispatchTrusted(el, new window.Event('input', { bubbles: true }));
   await flush(30);
   assert.equal(paletteShadow()?.querySelector('.fc-palette')?.hidden ?? true, true);
   rearm(true);
@@ -142,12 +169,12 @@ test('contenteditable search retries and failed insertion falls back to clipboar
   assert.ok(search);
   {
     search.value = '周报';
-    search.dispatchEvent(new window.Event('input', { bubbles: true }));
+    dispatchTrusted(search, new window.Event('input', { bubbles: true }));
     await flush(40);
     assert.equal(paletteShadow().querySelectorAll('.fc-item').length, 1);
     assert.match(paletteShadow().querySelector('.fc-item').textContent, /周报/);
   }
-  window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+  dispatchTrusted(window, new window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
   await flush(80);
   assert.equal(failures, 0);
   assert.equal(clipboard(), '写一封邮件');
@@ -160,12 +187,12 @@ test('inline // dismisses after the trigger is deleted', async () => {
   const el = field();
   el.value = '//';
   el.setSelectionRange(2, 2);
-  el.dispatchEvent(new window.Event('input', { bubbles: true }));
+  dispatchTrusted(el, new window.Event('input', { bubbles: true }));
   await waitFor(() => paletteShadow()?.querySelector('.fc-item, .fc-empty'));
   await flush(90);
   el.value = '';
   el.setSelectionRange(0, 0);
-  el.dispatchEvent(new window.Event('input', { bubbles: true }));
+  dispatchTrusted(el, new window.Event('input', { bubbles: true }));
   document.dispatchEvent(new window.Event('selectionchange'));
   await flush(120);
   assert.equal(paletteShadow().querySelector('.fc-palette').hidden, true);

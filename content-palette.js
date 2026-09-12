@@ -59,7 +59,7 @@
     host = document.createElement('div');
     host.style.cssText = 'position:fixed;z-index:2147483647;pointer-events:none;top:0;left:0;width:0;height:0;';
     (document.body || document.documentElement).appendChild(host);
-    shadow = host.attachShadow({ mode: 'open' });
+    shadow = host.attachShadow({ mode: 'closed' });
     const style = document.createElement('style');
     style.textContent = `.fc-palette{pointer-events:auto;background:#fff;border:1px solid #dfe5ed;border-radius:10px;box-shadow:0 12px 30px #26384a18;font-family:Inter,"Microsoft YaHei UI",system-ui,sans-serif;overflow:hidden;position:fixed}.fc-search{width:100%;border:0;border-bottom:1px solid #edf0f4;box-sizing:border-box;font-size:13px;outline:0;padding:10px 12px}.fc-list{max-height:320px;overflow:auto;padding:4px}.fc-item{align-items:flex-start;background:transparent;border:0;border-radius:6px;color:#273141;cursor:pointer;display:grid;gap:2px;padding:8px 10px;text-align:left;width:100%}.fc-item.is-active{background:#edf3fa;color:#41668f}.fc-type{color:#8b96a5;font-size:11px}.fc-title{font-size:13px;font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.fc-preview{color:#8994a2;font-size:11px;line-height:1.4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.fc-pin{color:#5c7fa9;font-size:10px;font-weight:500;margin-left:6px}.fc-item-wrap{position:relative}.fc-empty{color:#8b96a5;font-size:12px;line-height:1.5;padding:14px 12px}.fc-empty-hint{color:#9aa4b2;font-size:11px;margin-top:4px}`;
     shadow.appendChild(style);
@@ -75,7 +75,7 @@
     toastHost = document.createElement('div');
     toastHost.style.cssText = 'position:fixed;z-index:2147483647;pointer-events:none;bottom:16px;right:16px;';
     (document.body || document.documentElement).appendChild(toastHost);
-    toastShadow = toastHost.attachShadow({ mode: 'open' });
+    toastShadow = toastHost.attachShadow({ mode: 'closed' });
     const style = document.createElement('style');
     style.textContent = '.fc-toast{background:#2d4056;border-radius:8px;color:#fff;font-family:Inter,"Microsoft YaHei UI",system-ui,sans-serif;font-size:12px;opacity:0;padding:8px 12px;transition:opacity .12s}.fc-toast.show{opacity:1}';
     toastShadow.appendChild(style);
@@ -231,31 +231,59 @@
     panel.style.visibility = '';
   }
 
+  function el(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text != null) node.textContent = text;
+    return node;
+  }
+
+  function renderItems() {
+    if (!items.length) {
+      const empty = el('div', 'fc-empty', '没有匹配的资产');
+      empty.appendChild(el('div', 'fc-empty-hint', '可在 FutureContext 弹窗中新建'));
+      return empty;
+    }
+    const list = el('div', 'fc-list');
+    items.forEach((item, i) => {
+      const wrap = el('div', 'fc-item-wrap');
+      const btn = el('button', `fc-item${i === selected ? ' is-active' : ''}`);
+      btn.type = 'button';
+      btn.dataset.i = String(i);
+      const type = el('span', 'fc-type', item.typeLabel ?? '');
+      if (item.pinned) type.appendChild(el('span', 'fc-pin', '置顶'));
+      btn.append(type, el('span', 'fc-title', item.title ?? ''), el('span', 'fc-preview', item.preview ?? ''));
+      btn.addEventListener('mousedown', (e) => {
+        if (!e.isTrusted) return;
+        e.preventDefault();
+        void insert(Number(btn.dataset.i), e);
+      });
+      wrap.appendChild(btn);
+      list.appendChild(wrap);
+    });
+    return list;
+  }
+
   function renderList() {
     if (!panel) return;
-    const body = !items.length
-      ? `<div class="fc-empty">没有匹配的资产<div class="fc-empty-hint">可在 FutureContext 弹窗中新建</div></div>`
-      : `<div class="fc-list">${items.map((item, i) => `<div class="fc-item-wrap"><button type="button" class="fc-item ${i === selected ? 'is-active' : ''}" data-i="${i}"><span class="fc-type">${item.typeLabel}${item.pinned ? '<span class="fc-pin">置顶</span>' : ''}</span><span class="fc-title">${escapeHtml(item.title)}</span><span class="fc-preview">${escapeHtml(item.preview)}</span></button></div>`).join('')}</div>`;
+    const body = renderItems();
     if (mode === 'standalone') {
       let search = panel.querySelector('.fc-search');
       if (!search) {
-        panel.innerHTML = `<input class="fc-search" type="search" placeholder="搜索资产…" autocomplete="off" />`;
-        search = panel.querySelector('.fc-search');
-        search.addEventListener('input', () => { void runQuery(search.value); });
+        panel.replaceChildren();
+        search = el('input', 'fc-search');
+        search.type = 'search';
+        search.placeholder = '搜索资产…';
+        search.autocomplete = 'off';
+        search.addEventListener('input', (e) => { if (e.isTrusted) void runQuery(search.value); });
+        panel.appendChild(search);
       }
       queryInput = search;
       panel.querySelectorAll('.fc-list, .fc-empty').forEach((node) => node.remove());
-      const wrap = document.createElement('div');
-      wrap.innerHTML = body;
-      while (wrap.firstChild) panel.appendChild(wrap.firstChild);
+      panel.appendChild(body);
     } else {
-      panel.innerHTML = body;
+      panel.replaceChildren(body);
     }
-    panel.querySelectorAll('.fc-item').forEach((btn) => btn.addEventListener('mousedown', (e) => { e.preventDefault(); void insert(Number(btn.dataset.i)); }));
-  }
-
-  function escapeHtml(v) {
-    return String(v).replace(/[&<>'"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[c]);
   }
 
   async function runQuery(q) {
@@ -395,7 +423,7 @@
   }
 
   function onDocInput(e) {
-    if (inHost(e)) return;
+    if (!e.isTrusted || inHost(e)) return;
     const el = editableFrom(e.target) || editableFrom(document.activeElement);
     if (open) {
       if (mode === 'inline') scheduleInlineCheck();
@@ -405,7 +433,7 @@
   }
 
   function onBeforeInput(e) {
-    if (!triggerEnabled || inHost(e)) return;
+    if (!e.isTrusted || !triggerEnabled || inHost(e)) return;
     const el = editableFrom(e.target) || editableFrom(document.activeElement);
     const data = e.data;
     if (typeof data === 'string' && data.includes('/')) interceptCompletingSlash(e, el);
@@ -415,13 +443,13 @@
   }
 
   function onDocKeyDown(e) {
-    if (!triggerEnabled || inHost(e)) return;
+    if (!e.isTrusted || !triggerEnabled || inHost(e)) return;
     if (e.key !== '/' || e.ctrlKey || e.metaKey || e.altKey) return;
     interceptCompletingSlash(e, editableFrom(e.target) || editableFrom(document.activeElement));
   }
 
   function onKeyUp(e) {
-    if (!triggerEnabled || open || inHost(e)) return;
+    if (!e.isTrusted || !triggerEnabled || open || inHost(e)) return;
     considerOpen(editableFrom(e.target) || editableFrom(document.activeElement));
   }
 
@@ -454,12 +482,12 @@
   }
 
   function onKey(e) {
-    if (!open) return;
+    if (!open || !e.isTrusted) return;
     if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); return close(); }
     if (e.key === 'ArrowDown') { e.preventDefault(); e.stopImmediatePropagation(); selected = items.length ? (selected + 1) % items.length : 0; renderList(); return; }
     if (e.key === 'ArrowUp') { e.preventDefault(); e.stopImmediatePropagation(); selected = items.length ? (selected - 1 + items.length) % items.length : 0; renderList(); return; }
     if ((e.key === 'Enter' && !e.shiftKey) || e.key === 'Tab') {
-      if (items.length) { e.preventDefault(); e.stopImmediatePropagation(); void insert(selected); }
+      if (items.length) { e.preventDefault(); e.stopImmediatePropagation(); void insert(selected, e); }
       else if (e.key === 'Enter') { e.preventDefault(); e.stopImmediatePropagation(); }
     }
   }
@@ -488,7 +516,8 @@
     return el.innerText !== before;
   }
 
-  async function insert(index) {
+  async function insert(index, event) {
+    if (event && !event.isTrusted) return;
     const item = items[index];
     if (!item || !target) return close();
     const el = target;
@@ -539,7 +568,7 @@
     bind(document, 'compositionend', onDocInput, true);
     bind(document, 'selectionchange', onSelectionChange);
     armed = true;
-    window.__futureContextPalette = { destroy, openFromShortcut };
+    window.__futureContextPalette = { destroy, openFromShortcut, getShadow: () => shadow };
   }
 
   function applySettings(s) {
