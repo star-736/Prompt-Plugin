@@ -1,7 +1,13 @@
-import { DELIVERY_MARKER, inspectDeliveryDirectory } from './agent-deliver.js';
+import { DELIVERY_MARKER, folderMatchesAsset, inspectDeliveryDirectory, skillFolderCandidates, skillSlug, skillYamlName } from './agent-deliver.js';
 
 function isMissing(error) {
   return error?.name === 'NotFoundError' || /not found|not exist/i.test(String(error?.message ?? ''));
+}
+
+export async function canReadHandle(handle) {
+  if (!handle) return false;
+  if (!handle.queryPermission) return true;
+  return (await handle.queryPermission({ mode: 'read' })) === 'granted';
 }
 
 export async function ensureReadWrite(handle, { prompt = true } = {}) {
@@ -45,6 +51,77 @@ async function ensureParent(root, segments) {
   let current = root;
   for (const part of segments.slice(0, -1)) current = await current.getDirectoryHandle(part, { create: true });
   return { directory: current, name: segments[segments.length - 1] };
+}
+
+export async function listChildDirectories(root) {
+  const items = [];
+  if (typeof root?.entries === 'function') {
+    for await (const [name, handle] of root.entries()) {
+      const kind = handle?.kind ?? (typeof handle?.getDirectoryHandle === 'function' ? 'directory' : 'file');
+      if (kind === 'directory') items.push({ name, handle });
+    }
+    return items;
+  }
+  if (root?._entries) {
+    for (const [name, entry] of root._entries) {
+      if (entry.type === 'dir') items.push({ name, handle: entry.handle });
+    }
+  }
+  return items;
+}
+
+export async function indexSkillDirectories(root) {
+  const byKey = new Map();
+  const pendingYaml = [];
+  for (const child of await listChildDirectories(root)) {
+    if (String(child.name).startsWith('.')) continue;
+    const item = { name: child.name, handle: child.handle, yamlName: '' };
+    byKey.set(String(child.name).trim().toLocaleLowerCase(), item);
+    pendingYaml.push(item);
+  }
+  return {
+    byKey,
+    async ensureYaml() {
+      for (const item of pendingYaml) {
+        if (item._yamlLoaded) continue;
+        item.yamlName = skillYamlName(await readFileText(item.handle, 'SKILL.md') ?? '');
+        item._yamlLoaded = true;
+        if (!item.yamlName) continue;
+        const yamlKey = item.yamlName.trim().toLocaleLowerCase();
+        if (!byKey.has(yamlKey)) byKey.set(yamlKey, item);
+        const slugKey = skillSlug(item.yamlName).toLocaleLowerCase();
+        if (slugKey && !byKey.has(slugKey)) byKey.set(slugKey, item);
+      }
+    }
+  };
+}
+
+export async function scanSkillPresence(root, { asset, assetId, record }, index) {
+  const idx = index ?? await indexSkillDirectories(root);
+  const candidates = skillFolderCandidates(asset, record);
+  const lookup = async () => {
+    for (const name of candidates) {
+      const item = idx.byKey.get(String(name).trim().toLocaleLowerCase());
+      if (item) return item;
+    }
+    return null;
+  };
+  let item = await lookup();
+  if (!item) {
+    await idx.ensureYaml();
+    item = await lookup();
+    if (!item) {
+      for (const candidate of idx.byKey.values()) {
+        if (folderMatchesAsset(candidate.name, candidate.yamlName, candidates)) {
+          item = candidate;
+          break;
+        }
+      }
+    }
+  }
+  if (!item) return { kind: 'missing' };
+  const markerText = await readFileText(item.handle, DELIVERY_MARKER);
+  return { ...inspectDeliveryDirectory({ exists: true, markerText, assetId }), slug: item.name };
 }
 
 export async function inspectWritableSlot(root, slug, assetId) {

@@ -97,6 +97,47 @@ export function inspectDeliveryDirectory({ exists, markerText, assetId }) {
   return { kind: 'ours-other', marker };
 }
 
+export function skillYamlName(content) {
+  const source = String(content ?? '').replace(/^\uFEFF/, '');
+  const match = source.match(/^---\s*\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n|$)/);
+  if (!match) return '';
+  for (const line of match[1].split(/\r?\n/)) {
+    const field = line.match(/^name:\s*(.+?)\s*$/i);
+    if (field) return field[1].replace(/^(['"])(.*)\1$/, '$2').trim();
+  }
+  return '';
+}
+
+export function normalizeFolderKey(name) {
+  return String(name ?? '').trim().toLocaleLowerCase();
+}
+
+export function skillFolderCandidates(asset, record = null) {
+  const yaml = skillYamlName(asset?.content);
+  const names = [record?.slug, asset?.title, yaml, skillSlug(asset?.title, asset?.id), skillSlug(yaml, asset?.id)];
+  const seen = new Set();
+  const candidates = [];
+  for (const name of names) {
+    const trimmed = String(name ?? '').trim();
+    if (!trimmed) continue;
+    for (const variant of [trimmed, skillSlug(trimmed, asset?.id)]) {
+      const key = normalizeFolderKey(variant);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      candidates.push(variant);
+    }
+  }
+  return candidates;
+}
+
+export function folderMatchesAsset(folderName, yamlName, candidates) {
+  const wanted = new Set(candidates.map(normalizeFolderKey));
+  if (wanted.has(normalizeFolderKey(folderName))) return true;
+  const yaml = String(yamlName ?? '').trim();
+  if (!yaml) return false;
+  return wanted.has(normalizeFolderKey(yaml)) || wanted.has(normalizeFolderKey(skillSlug(yaml)));
+}
+
 export function normalizeSkillDelivery(value) {
   const targets = {};
   for (const [id, record] of Object.entries(value?.targets ?? {})) {
@@ -125,6 +166,67 @@ export function deliveryStatus(asset, target) {
   if (!record) return { state: 'idle', record: null };
   const stale = Number(asset?.updatedAt ?? 0) > Number(record.contentUpdatedAt ?? 0);
   return { state: stale ? 'stale' : 'delivered', record };
+}
+
+export function sameDeliveryRecord(left, right) {
+  return Boolean(left && right && left.slug === right.slug && Number(left.deliveredAt ?? 0) === Number(right.deliveredAt ?? 0) && Number(left.contentUpdatedAt ?? 0) === Number(right.contentUpdatedAt ?? 0));
+}
+
+export function resolveDeliveryStatus(asset, target, { bound = false, disk } = {}) {
+  const record = deliveryRecord(asset, target);
+  if (!bound) {
+    if (!record) return { state: 'unbound', record: null };
+    const stale = Number(asset?.updatedAt ?? 0) > Number(record.contentUpdatedAt ?? 0);
+    return { state: stale ? 'stale' : 'delivered', record, unconfirmed: true };
+  }
+  if (disk == null) {
+    if (!record) return { state: 'idle', record: null, unconfirmed: true };
+    const stale = Number(asset?.updatedAt ?? 0) > Number(record.contentUpdatedAt ?? 0);
+    return { state: stale ? 'stale' : 'delivered', record, unconfirmed: true };
+  }
+  if (disk.kind === 'ours') {
+    const contentUpdatedAt = Number(disk.marker?.contentUpdatedAt ?? record?.contentUpdatedAt ?? 0);
+    const deliveredAt = Number(disk.marker?.deliveredAt ?? record?.deliveredAt ?? 0);
+    const stale = Number(asset?.updatedAt ?? 0) > contentUpdatedAt;
+    return {
+      state: stale ? 'stale' : 'delivered',
+      record: {
+        slug: disk.slug || disk.marker?.slug || record?.slug,
+        deliveredAt: deliveredAt || null,
+        contentUpdatedAt: contentUpdatedAt || null
+      }
+    };
+  }
+  if (disk.kind === 'foreign' || disk.kind === 'ours-other') {
+    return { state: 'present', record: null, slug: disk.slug ?? null };
+  }
+  return { state: 'idle', record: null };
+}
+
+export function diskDeliveryWrite(status) {
+  if (status?.state === 'delivered' || status?.state === 'stale') return { action: 'set', record: status.record };
+  if (status?.state === 'idle' || status?.state === 'present') return { action: 'clear' };
+  return { action: 'none' };
+}
+
+export function deliveryStateLabel(status, { bound = false } = {}) {
+  if (status?.state === 'unbound') return '未选择目录，无法确认磁盘是否已有';
+  if (status?.state === 'present') return '目录里已有 · 不是 FutureContext 投递的，撤回不会动它';
+  if (status?.state === 'delivered') return status.unconfirmed ? (bound ? '已投递 · 需要重新选择目录' : '已投递 · 未选择目录，无法确认磁盘是否仍在') : '已投递';
+  if (status?.state === 'stale') return status.unconfirmed ? (bound ? '库已更新 · 需要重新选择目录' : '库已更新 · 未选择目录，无法确认磁盘是否仍在') : '库已更新';
+  if (status?.unconfirmed) return bound ? '需要重新选择目录' : '无法确认磁盘是否已有';
+  return '未投递';
+}
+
+export function deliveryActionPlan(status) {
+  if (!status || status.state === 'present') return {};
+  const plan = {};
+  if (status.state === 'unbound') plan.bind = true;
+  else if (status.state === 'idle') plan.deliver = 'deliver';
+  else if (status.state === 'stale') plan.deliver = 'update';
+  else if (status.state === 'delivered') plan.recall = true;
+  if (status.unconfirmed && status.state !== 'unbound') plan.bind = true;
+  return plan;
 }
 
 export function deliverySummary(asset) {

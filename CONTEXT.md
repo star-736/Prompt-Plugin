@@ -137,8 +137,12 @@ _Avoid_: 平台内置账号、多个后台 Provider 并行运行、任意协议�
 _Avoid_: 私有仓库登录、本地 ZIP 作为主入口、仓库首页全量扫描、自动抓取网页、脚本执行、二期网页上传、自动更新
 
 **投递到 Agent**:
-用户把一条已保存的普通库 Skill 明确写入某个 Agent 的本地 skills 目录，使该 Agent 可以发现它。收集本身不是投递；未投递的 Skill 对任何 Agent 不可见。
+用户把一条已保存的普通库 Skill 明确写入某个 Agent 的本地 skills 目录，并留下可撤回的 FutureContext 标记。收集本身不是投递；未投递并不表示磁盘上没有同名 Skill，只表示 FutureContext 没有写下属于该条目的副本。
 _Avoid_: 同步到 Agent、自动注入、安装 Skill、导出到 Agent
+
+**目录里已有**:
+已绑定的 Agent skills 目录中存在与该条 Skill 同名或 YAML name 相同的文件夹，但没有属于该条目的 FutureContext 投递标记。界面据此说明磁盘已有外来副本，不把它当作可撤回的投递，也不覆盖或删除它。
+_Avoid_: 已同步、已安装、已投递
 
 **撤回投递**:
 用户从已绑定的 Agent skills 目录中删除 FutureContext 为某条 Skill 写下的副本。只删除带投递标记且属于该条目的目录；库内收藏保留。

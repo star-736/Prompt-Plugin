@@ -1,6 +1,6 @@
 import { DEFAULT_PALETTE_TYPES } from './in-place.js';
 import { assertPackageLimits } from './package-store.js';
-import { isAgentTarget, normalizeSkillDelivery } from './agent-deliver.js';
+import { deliveryRecord, diskDeliveryWrite, isAgentTarget, normalizeSkillDelivery, sameDeliveryRecord } from './agent-deliver.js';
 
 export const APP_STORAGE_KEY = 'futurecontext.v1';
 export const BACKUP_FORMAT = 'futurecontext.backup';
@@ -295,6 +295,27 @@ export function clearSkillDeliveryTarget(database, id, target) {
   delete targets[target];
   next.assets[index] = { ...next.assets[index], skillDelivery: Object.keys(targets).length ? { targets } : undefined };
   return next;
+}
+export function applyDiskDeliveries(database, updates) {
+  let next = database;
+  let changed = false;
+  for (const { assetId, target, status } of updates ?? []) {
+    if (!isAgentTarget(target)) continue;
+    const asset = next.assets.find((item) => item.id === assetId);
+    if (!asset || asset.type !== 'skill') continue;
+    const write = diskDeliveryWrite(status);
+    const existing = deliveryRecord(asset, target);
+    if (write.action === 'set' && write.record?.slug) {
+      if (!sameDeliveryRecord(existing, write.record)) {
+        next = setSkillDeliveryTarget(next, assetId, target, write.record);
+        changed = true;
+      }
+    } else if (write.action === 'clear' && existing) {
+      next = clearSkillDeliveryTarget(next, assetId, target);
+      changed = true;
+    }
+  }
+  return changed ? next : null;
 }
 export function setAssetCategory(database, id, categoryId, { now = Date.now() } = {}) {
   const next = normalizeDatabase(clone(database)); const index = next.assets.findIndex((asset) => asset.id === id); if (index < 0) throw new Error('找不到该条目。');
