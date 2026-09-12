@@ -141,7 +141,7 @@ _Avoid_: 私有仓库登录、本地 ZIP 作为主入口、仓库首页全量扫
 _Avoid_: 同步到 Agent、自动注入、安装 Skill、导出到 Agent
 
 **目录里已有**:
-已绑定的 Agent skills 目录中存在与该条 Skill 的 YAML name 相同的文件夹，但没有属于该条目的 FutureContext 投递标记。一期只用 name 判定为同一条，不区分中英版或无关同名。
+已绑定的 Agent skills 目录中存在与该条 Skill 的 YAML name 相同的文件夹，但没有属于该条目的 FutureContext 投递标记。一期只用 name 判定为同一条，不区分中英版或无关同名。Cursor 与 Codex 还会对照通用 Agent 目录（`~/.agents/skills`）；若只在那里找到，界面写「通用 Agent 目录里已有」。
 _Avoid_: 已同步、已安装、已投递
 
 **版本不一致**:

@@ -7,6 +7,10 @@ export const AGENT_TARGETS = Object.freeze([
   { id: 'agents', label: '通用 Agent', pathUnix: '~/.agents', pathWindows: '%USERPROFILE%\\.agents' }
 ]);
 export const AGENT_TARGET_IDS = Object.freeze(AGENT_TARGETS.map((target) => target.id));
+export const SHARED_SKILL_TARGETS = Object.freeze(['cursor', 'codex']);
+export function usesSharedAgentsDirectory(id) {
+  return SHARED_SKILL_TARGETS.includes(id);
+}
 
 const RESERVED_SLUGS = new Set(['con', 'prn', 'aux', 'nul', 'com1', 'com2', 'com3', 'com4', 'lpt1', 'lpt2', 'lpt3', 'lpt4']);
 
@@ -221,8 +225,17 @@ function statusFromDisk(asset, target, disk, record) {
   return { state: 'idle', record: null };
 }
 
-export function resolveDeliveryStatus(asset, target, { bound = false, disk } = {}) {
+export function resolveDeliveryStatus(asset, target, { bound = false, disk, sharedDisk } = {}) {
   const record = deliveryRecord(asset, target);
+  const ownKnownEmpty = !bound || disk?.kind === 'missing';
+  const ownUnconfirmed = bound && disk == null;
+  if (!ownUnconfirmed && disk && disk.kind !== 'missing') {
+    const own = statusFromDisk(asset, target, disk, record);
+    if (own.state !== 'idle') return own;
+  }
+  if (ownKnownEmpty && usesSharedAgentsDirectory(target) && sharedDisk && sharedDisk.kind && sharedDisk.kind !== 'missing') {
+    return { ...statusFromDisk(asset, 'agents', sharedDisk, deliveryRecord(asset, 'agents')), via: 'agents' };
+  }
   if (!bound) {
     if (!record) return { state: 'unbound', record: null };
     const stale = Number(asset?.updatedAt ?? 0) > Number(record.contentUpdatedAt ?? 0);
@@ -233,7 +246,7 @@ export function resolveDeliveryStatus(asset, target, { bound = false, disk } = {
     const stale = Number(asset?.updatedAt ?? 0) > Number(record.contentUpdatedAt ?? 0);
     return { state: stale ? 'stale' : 'delivered', record, unconfirmed: true };
   }
-  return statusFromDisk(asset, target, disk, record);
+  return { state: 'idle', record: null };
 }
 
 export function diskDeliveryWrite(status) {
@@ -243,11 +256,18 @@ export function diskDeliveryWrite(status) {
 }
 
 export function deliveryStateLabel(status, { bound = false } = {}) {
+  const viaAgents = status?.via === 'agents';
   if (status?.state === 'unbound') return '未选择目录，请先在设置中绑定';
-  if (status?.state === 'present') return '目录里已有 · 版本一致，撤回不会动它';
-  if (status?.state === 'outdated') return '目录里已有 · 版本不一致';
-  if (status?.state === 'delivered') return status.unconfirmed ? (bound ? '已投递 · 已记住目录，点一次允许访问即可对照' : '已投递 · 未选择目录，无法确认磁盘是否仍在') : '已投递';
-  if (status?.state === 'stale') return status.unconfirmed ? (bound ? '库已更新 · 已记住目录，点一次允许访问即可对照' : '库已更新 · 未选择目录，无法确认磁盘是否仍在') : '库已更新';
+  if (status?.state === 'present') return viaAgents ? '通用 Agent 目录里已有 · 版本一致' : '目录里已有 · 版本一致，撤回不会动它';
+  if (status?.state === 'outdated') return viaAgents ? '通用 Agent 目录里已有 · 版本不一致' : '目录里已有 · 版本不一致';
+  if (status?.state === 'delivered') {
+    if (viaAgents && !status.unconfirmed) return '已在通用 Agent 目录';
+    return status.unconfirmed ? (bound ? '已投递 · 已记住目录，点一次允许访问即可对照' : '已投递 · 未选择目录，无法确认磁盘是否仍在') : '已投递';
+  }
+  if (status?.state === 'stale') {
+    if (viaAgents && !status.unconfirmed) return '库已更新 · 已在通用 Agent 目录';
+    return status.unconfirmed ? (bound ? '库已更新 · 已记住目录，点一次允许访问即可对照' : '库已更新 · 未选择目录，无法确认磁盘是否仍在') : '库已更新';
+  }
   if (status?.unconfirmed) return bound ? '已记住目录，点一次允许访问即可对照' : '无法确认磁盘是否已有';
   return '本地没有找到这份 Skill';
 }

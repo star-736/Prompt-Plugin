@@ -50,7 +50,7 @@ import { githubToken, saveGitHubToken } from './github-auth.js';
 import { buildPackageFileTree, deletePackage, exportPackages, getPackage, putPackage, isTextFile } from './package-store.js';
 import { githubSkillUrlError, inspectGitHubSkillUrl } from './github-skill.js';
 import { isPromptableSite, isRestrictedTabUrl, normalizeSiteOrigin, originCoveredBySites, originOfUrl, PALETTE_SCRIPT_FILE, patternsForSites, relatedMatchPatterns, SHORTCUT_LABEL, SITE_PRESETS, siteHost } from './in-place.js';
-import { AGENT_TARGETS, agentFolderBindGuide, agentPathHint, deliveryActionPlan, deliveryRecord, deliveryStateLabel, deliverySummary, resolveDeliveryStatus } from './agent-deliver.js';
+import { AGENT_TARGETS, agentFolderBindGuide, agentPathHint, deliveryActionPlan, deliveryRecord, deliveryStateLabel, deliverySummary, resolveDeliveryStatus, usesSharedAgentsDirectory } from './agent-deliver.js';
 import { getBinding, listBindings } from './agent-folders.js';
 import { canReadHandle, indexSkillDirectories, resolveSkillsDirectory, scanSkillPresence } from './agent-fs.js';
 import { runDeliverAction } from './deliver.js';
@@ -397,7 +397,7 @@ function renderEditor() {
 
 function renderDeliveryActions(asset, target, status) {
   const plan = deliveryActionPlan(status);
-  const actionId = target.id;
+  const actionId = status.via === 'agents' ? 'agents' : target.id;
   const buttons = [];
   if (plan.bind) buttons.push(`<button class="button button-ghost button-small" type="button" data-action="open-agent-settings">去设置</button>`);
   if (plan.allow) buttons.push(`<button class="button button-ghost button-small" type="button" data-action="allow-agent-folder" data-target="${actionId}">允许访问</button>`);
@@ -412,7 +412,8 @@ function renderSkillDelivery(asset) {
   const rows = AGENT_TARGETS.map((target) => {
     const bound = state.agentBindings.some((item) => item.id === target.id);
     const disk = state.deliveryDisk?.[asset.id]?.[target.id];
-    const status = resolveDeliveryStatus(asset, target.id, { bound, disk });
+    const sharedDisk = usesSharedAgentsDirectory(target.id) ? state.deliveryDisk?.[asset.id]?.agents : undefined;
+    const status = resolveDeliveryStatus(asset, target.id, { bound, disk, sharedDisk });
     return `<div class="setting-row"><div><div class="setting-title">${escapeHtml(target.label)}</div><div class="setting-description">${escapeHtml(deliveryStateLabel(status, { bound }))}</div></div>${renderDeliveryActions(asset, target, status)}</div>`;
   }).join('');
   return `<details class="section-card skill-delivery" open>

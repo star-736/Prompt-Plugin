@@ -92,6 +92,13 @@ if (t.name.includes('present on disk')) {
   await writeMemoryFile(skillDir, 'SKILL.md', skill);
   await putBinding({ id: 'cursor', handle: root, displayName: 'skills' }, indexedDb);
 }
+if (t.name.includes('shared agents directory')) {
+  const agents = createMemoryDirectory();
+  const skillDir = await agents.getDirectoryHandle('Email-reviewer', { create: true });
+  await writeMemoryFile(skillDir, 'SKILL.md', skill);
+  await putBinding({ id: 'agents', handle: agents, displayName: 'skills' }, indexedDb);
+  await putBinding({ id: 'cursor', handle: createMemoryDirectory(), displayName: 'skills' }, indexedDb);
+}
 if (t.name.includes('outdated on disk')) {
   const root = createMemoryDirectory();
   const skillDir = await root.getDirectoryHandle('Email-reviewer', { create: true });
@@ -282,6 +289,16 @@ test('present on disk skill is not recallable', async () => {
   assert.equal(document.querySelector('[data-action="refresh-skill"][data-target="cursor"]'), null);
   assert.equal(document.querySelector('[data-action="recall-skill"][data-target="cursor"]'), null);
   assert.equal(stub.local['futurecontext.v1'].assets.find((asset) => asset.id === 's1').skillDelivery, undefined);
+});
+
+test('shared agents directory shows on Cursor without claiming it', async () => {
+  click('[data-tab="skill"]');
+  await waitFor(() => document.querySelector('[data-id="s1"]'));
+  click('[data-action="open-asset"][data-id="s1"]');
+  await waitFor(() => /通用 Agent 目录里已有/.test(document.querySelector('#app').textContent));
+  assert.match(document.querySelector('#app').textContent, /版本一致/);
+  assert.equal(document.querySelector('[data-action="deliver-skill"][data-target="cursor"]'), null);
+  assert.equal(document.querySelector('[data-action="recall-skill"][data-target="cursor"]'), null);
 });
 
 test('outdated on disk skill can refresh the local copy', async () => {

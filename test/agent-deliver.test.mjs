@@ -322,6 +322,29 @@ test('resolveDeliveryStatus distinguishes disk, metadata, and unbound folders', 
   assert.equal(resolveDeliveryStatus(asset, 'claude', { bound: true, disk: { kind: 'foreign', slug: 'Email-reviewer' } }).state, 'present');
   assert.equal(resolveDeliveryStatus(asset, 'claude', { bound: true, disk: { kind: 'foreign', slug: 'Email-reviewer', current: false } }).state, 'outdated');
   assert.equal(resolveDeliveryStatus(asset, 'claude', { bound: true, disk: { kind: 'ours-other', slug: 'Email-reviewer' } }).state, 'present');
+  const viaAgents = resolveDeliveryStatus({ id: 's1' }, 'cursor', {
+    bound: true,
+    disk: { kind: 'missing' },
+    sharedDisk: { kind: 'foreign', slug: 'Email-reviewer', current: true }
+  });
+  assert.equal(viaAgents.state, 'present');
+  assert.equal(viaAgents.via, 'agents');
+  assert.match(deliveryStateLabel(viaAgents), /通用 Agent 目录里已有/);
+  assert.match(deliveryStateLabel(viaAgents), /版本一致/);
+  const viaOutdated = resolveDeliveryStatus({ id: 's1' }, 'codex', {
+    bound: false,
+    sharedDisk: { kind: 'foreign', slug: 'Email-reviewer', current: false }
+  });
+  assert.equal(viaOutdated.state, 'outdated');
+  assert.equal(viaOutdated.via, 'agents');
+  assert.match(deliveryStateLabel(viaOutdated), /通用 Agent 目录里已有/);
+  assert.match(deliveryStateLabel(viaOutdated), /版本不一致/);
+  assert.equal(resolveDeliveryStatus({ id: 's1' }, 'claude', {
+    bound: true,
+    disk: { kind: 'missing' },
+    sharedDisk: { kind: 'foreign', slug: 'Email-reviewer', current: true }
+  }).via, undefined);
+  assert.equal(deliveryStateLabel({ state: 'delivered', via: 'agents' }), '已在通用 Agent 目录');
   const ours = resolveDeliveryStatus({ id: 's1', updatedAt: 5 }, 'claude', {
     bound: true,
     disk: { kind: 'ours', slug: 'email-reviewer', marker: { contentUpdatedAt: 5, deliveredAt: 4, slug: 'email-reviewer' } }
