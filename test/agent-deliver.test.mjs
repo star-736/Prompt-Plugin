@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   AGENT_TARGET_IDS,
+  agentFolderBindGuide,
   agentPathHint,
   createDeliveryMarker,
   decodePackageBytes,
@@ -11,6 +12,7 @@ import {
   deliveryStatus,
   diskDeliveryWrite,
   folderMatchesAsset,
+  folderPickerHelp,
   inspectDeliveryDirectory,
   parseDeliveryMarker,
   resolveDeliveryStatus,
@@ -20,7 +22,7 @@ import {
   skillSlug,
   skillYamlName
 } from '../agent-deliver.js';
-import { canReadHandle, ensureReadWrite, indexSkillDirectories, listChildDirectories, recallDelivery, scanSkillPresence, writeDelivery } from '../agent-fs.js';
+import { canReadHandle, ensureReadWrite, indexSkillDirectories, listChildDirectories, recallDelivery, resolveSkillsDirectory, scanSkillPresence, writeDelivery } from '../agent-fs.js';
 import { deleteBinding, getBinding, listBindings, putBinding } from '../agent-folders.js';
 import { runDeliverAction } from '../deliver.js';
 import { applyDiskDeliveries, clearSkillDeliveryTarget, createBackup, createEmptyDatabase, mergeBackup, saveAsset, setSkillDeliveryTarget } from '../store.js';
@@ -92,7 +94,12 @@ test('skillDelivery metadata is additive, stale-aware, and stripped on import', 
   assert.equal(merged.database.assets[0].skillDelivery, undefined);
   assert.equal(agentPathHint('claude', 'Win32').includes('USERPROFILE'), true);
   assert.equal(agentPathHint('hermes', 'Win32').includes('LOCALAPPDATA'), true);
-  assert.equal(agentPathHint('hermes', 'Linux'), '~/.hermes/skills');
+  assert.equal(agentPathHint('hermes', 'Linux'), '~/.hermes');
+  assert.match(folderPickerHelp('cursor', 'Win32'), /地址栏/);
+  assert.match(folderPickerHelp('cursor', 'Win32'), /USERPROFILE/);
+  assert.match(folderPickerHelp('cursor', 'MacIntel'), /Command\+Shift\+G/);
+  assert.match(agentFolderBindGuide('Win32'), /地址栏/);
+  assert.match(agentFolderBindGuide('MacIntel'), /Command\+Shift\+G/);
   assert.equal(AGENT_TARGET_IDS.includes('claude'), true);
   assert.equal(AGENT_TARGET_IDS.includes('hermes'), true);
   assert.equal(AGENT_TARGET_IDS.includes('openclaw'), false);
@@ -123,15 +130,15 @@ test('ensureReadWrite prompts for permission and refuses denied folders', async 
   await assert.rejects(() => ensureReadWrite({
     async queryPermission() { return 'prompt'; },
     async requestPermission() { return 'denied'; }
-  }), /没有该目录的写入权限/);
+  }), /访问权限|允许访问/);
   await assert.rejects(() => ensureReadWrite({
     async queryPermission() { return 'denied'; }
-  }), /没有该目录的写入权限/);
+  }), /访问权限|允许访问/);
   let promptedWithoutAsk = 0;
   await assert.rejects(() => ensureReadWrite({
     async queryPermission() { return 'prompt'; },
     async requestPermission() { promptedWithoutAsk += 1; return 'granted'; }
-  }, { prompt: false }), /没有该目录的写入权限/);
+  }, { prompt: false }), /访问权限|允许访问/);
   assert.equal(promptedWithoutAsk, 0);
 });
 
@@ -161,7 +168,12 @@ test('runDeliverAction binds, unbinds, and rejects invalid requests', async () =
   globalThis.showDirectoryPicker = async () => root;
   const bound = await runDeliverAction({ action: 'bind', target: 'cursor', pickFolder: true });
   assert.match(bound.message, /已记住/);
-  assert.equal((await getBinding('cursor', indexedDb)).displayName, 'skills');
+  assert.equal((await getBinding('cursor', indexedDb)).displayName, 'Cursor 的 skills');
+  const cursorRoot = createMemoryDirectory('.cursor');
+  globalThis.showDirectoryPicker = async () => cursorRoot;
+  await runDeliverAction({ action: 'bind', target: 'cursor', pickFolder: true });
+  assert.equal((await getBinding('cursor', indexedDb)).displayName, 'Cursor 的 skills');
+  assert.equal((await cursorRoot.getDirectoryHandle('skills')).name, 'skills');
   const unbound = await runDeliverAction({ action: 'unbind', target: 'cursor' });
   assert.match(unbound.message, /已解除/);
   assert.equal(await getBinding('cursor', indexedDb), null);
@@ -228,13 +240,13 @@ test('bootDeliver deliver does not re-prompt a bound folder that lost write acce
   let picked = 0;
   globalThis.showDirectoryPicker = async () => { picked += 1; return createMemoryDirectory(); };
   await loadFreshEntry('../deliver.js');
-  await waitFor(() => /重新选择目录/.test(globalThis.document?.querySelector('#app')?.textContent || ''));
+  await waitFor(() => /允许访问/.test(globalThis.document?.querySelector('#app')?.textContent || ''));
   assert.equal(picked, 0);
   assert.equal(permissionPrompts, 0);
-  click('[data-action="pick-folder"]');
+  click('[data-action="allow-access"]');
   await waitFor(() => /已投递到/.test(globalThis.document?.querySelector('#app')?.textContent || ''));
-  assert.equal(picked, 1);
-  assert.equal(permissionPrompts, 0);
+  assert.equal(picked, 0);
+  assert.equal(permissionPrompts, 1);
   delete globalThis.showDirectoryPicker;
 });
 
@@ -248,12 +260,18 @@ test('bootDeliver bind waits for an explicit folder pick', async () => {
   const indexedDb = createMemoryIndexedDB();
   createChromeStub({ indexedDB: indexedDb });
   const root = createMemoryDirectory();
-  installDom(deliverHtml(), { url: 'https://futurecontext.test/deliver.html?action=bind&target=agents' });
+  const { clipboard } = installDom(deliverHtml(), { url: 'https://futurecontext.test/deliver.html?action=bind&target=agents' });
   let picked = 0;
   globalThis.showDirectoryPicker = async () => { picked += 1; return root; };
   await loadFreshEntry('../deliver.js');
   await waitFor(() => /选择本身不会写入/.test(document.querySelector('#app')?.textContent || ''));
+  assert.match(document.querySelector('#app').textContent, /地址栏|Command\+Shift\+G/);
+  assert.equal(document.querySelector('[data-action="copy-path"]')?.textContent, '复制路径');
   assert.equal(document.querySelector('[data-action="run"]'), null);
+  assert.equal(picked, 0);
+  click('[data-action="copy-path"]');
+  await waitFor(() => /路径已复制/.test(document.querySelector('#app')?.textContent || ''));
+  assert.match(clipboard(), /agents/i);
   assert.equal(picked, 0);
   click('[data-action="pick-folder"]');
   await waitFor(() => /已记住/.test(document.querySelector('#app')?.textContent || ''));
@@ -296,20 +314,22 @@ test('resolveDeliveryStatus distinguishes disk, metadata, and unbound folders', 
     bound: true,
     disk: { kind: 'ours', slug: 'Email-reviewer', marker: { contentUpdatedAt: 5, deliveredAt: 4 } }
   }).state, 'stale');
-  assert.equal(deliveryStateLabel({ state: 'unbound' }), '未选择目录，无法确认磁盘是否已有');
+  assert.equal(deliveryStateLabel({ state: 'unbound' }), '未选择目录，请先在设置中绑定');
   assert.match(deliveryStateLabel({ state: 'present' }), /目录里已有/);
-  assert.equal(deliveryStateLabel({ state: 'idle' }), '未投递');
+  assert.equal(deliveryStateLabel({ state: 'idle' }), '本地没有找到这份 Skill');
   assert.equal(deliveryStateLabel({ state: 'idle', unconfirmed: true }), '无法确认磁盘是否已有');
   assert.equal(deliveryStateLabel({ state: 'delivered' }), '已投递');
   assert.match(deliveryStateLabel({ state: 'delivered', unconfirmed: true }), /未选择目录/);
-  assert.match(deliveryStateLabel({ state: 'delivered', unconfirmed: true }, { bound: true }), /需要重新选择目录/);
-  assert.equal(deliveryStateLabel({ state: 'idle', unconfirmed: true }, { bound: true }), '需要重新选择目录');
+  assert.match(deliveryStateLabel({ state: 'delivered', unconfirmed: true }, { bound: true }), /允许访问/);
+  assert.match(deliveryStateLabel({ state: 'idle', unconfirmed: true }, { bound: true }), /允许访问/);
+  assert.equal(deliveryActionPlan({ state: 'idle', unconfirmed: true }).deliver, undefined);
+  assert.equal(deliveryActionPlan({ state: 'idle', unconfirmed: true }).allow, true);
+  assert.equal(deliveryActionPlan({ state: 'idle', unconfirmed: true }).bind, undefined);
   assert.deepEqual(deliveryActionPlan({ state: 'present' }), {});
   assert.equal(deliveryActionPlan({ state: 'unbound' }).bind, true);
   assert.equal(deliveryActionPlan({ state: 'idle' }).deliver, 'deliver');
   assert.equal(deliveryActionPlan({ state: 'stale' }).deliver, 'update');
   assert.equal(deliveryActionPlan({ state: 'delivered' }).recall, true);
-  assert.equal(deliveryActionPlan({ state: 'idle', unconfirmed: true }).bind, true);
   assert.equal(diskDeliveryWrite({ state: 'delivered', record: { slug: 'x' } }).action, 'set');
   assert.equal(diskDeliveryWrite({ state: 'present' }).action, 'clear');
   assert.equal(diskDeliveryWrite({ state: 'unbound' }).action, 'none');
@@ -323,8 +343,9 @@ test('scanSkillPresence matches marked, foreign, case, and YAML-only folders', a
   assert.equal((await scanSkillPresence(root, { asset, assetId: 's1' })).kind, 'missing');
   const foreign = await root.getDirectoryHandle('email-reviewer', { create: true });
   await writeMemoryFile(foreign, 'SKILL.md', skill);
-  assert.equal((await scanSkillPresence(root, { asset, assetId: 's1' })).kind, 'foreign');
-  assert.equal((await scanSkillPresence(root, { asset, assetId: 's1' })).slug, 'email-reviewer');
+  const same = await scanSkillPresence(root, { asset, assetId: 's1' });
+  assert.equal(same.kind, 'foreign');
+  assert.equal(same.slug, 'email-reviewer');
   const marked = createMemoryDirectory();
   const ours = await marked.getDirectoryHandle('Email-reviewer', { create: true });
   await writeMemoryFile(ours, 'SKILL.md', skill);
@@ -339,6 +360,20 @@ test('scanSkillPresence matches marked, foreign, case, and YAML-only folders', a
   const hidden = createMemoryDirectory();
   await hidden.getDirectoryHandle('.system', { create: true });
   assert.equal((await scanSkillPresence(hidden, { asset, assetId: 's1' })).kind, 'missing');
+  const lower = createMemoryDirectory();
+  const lowerDir = await lower.getDirectoryHandle('email-reviewer', { create: true });
+  await writeMemoryFile(lowerDir, 'skill.md', skill);
+  assert.equal((await scanSkillPresence(lower, { asset, assetId: 's1' })).kind, 'foreign');
+  const codex = createMemoryDirectory('.codex');
+  const nested = await (await codex.getDirectoryHandle('skills', { create: true })).getDirectoryHandle('Email-reviewer', { create: true });
+  await writeMemoryFile(nested, 'SKILL.md', skill);
+  const resolved = await resolveSkillsDirectory(codex, 'codex');
+  assert.equal(resolved.displayName, '.codex/skills');
+  assert.equal((await scanSkillPresence(resolved.handle, { asset, assetId: 's1' })).kind, 'foreign');
+  const emptyCursor = createMemoryDirectory('.cursor');
+  const created = await resolveSkillsDirectory(emptyCursor, 'cursor', { create: true });
+  assert.equal(created.displayName, '.cursor/skills');
+  assert.equal(created.handle.name, 'skills');
 });
 
 test('directory listing works with entries, fallback maps, and read permission', async () => {

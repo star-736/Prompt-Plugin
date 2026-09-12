@@ -1,4 +1,14 @@
-import { DELIVERY_MARKER, folderMatchesAsset, inspectDeliveryDirectory, skillFolderCandidates, skillSlug, skillYamlName } from './agent-deliver.js';
+import {
+  DELIVERY_MARKER,
+  agentRootAliases,
+  folderMatchesAsset,
+  inspectDeliveryDirectory,
+  isAgentTarget,
+  normalizeFolderKey,
+  skillFolderCandidates,
+  skillSlug,
+  skillYamlName
+} from './agent-deliver.js';
 
 function isMissing(error) {
   return error?.name === 'NotFoundError' || /not found|not exist/i.test(String(error?.message ?? ''));
@@ -18,7 +28,7 @@ export async function ensureReadWrite(handle, { prompt = true } = {}) {
     const next = await handle.requestPermission({ mode: 'readwrite' });
     if (next === 'granted') return handle;
   }
-  throw new Error('没有该目录的写入权限。请重新选择目录。');
+  throw new Error('没有该目录的访问权限。请允许访问。');
 }
 
 export async function getChildDirectory(root, name, create = false) {
@@ -38,6 +48,33 @@ export async function readFileText(directory, name) {
     if (isMissing(error)) return null;
     throw error;
   }
+}
+
+export async function readSkillMarkdown(directory) {
+  return await readFileText(directory, 'SKILL.md') ?? await readFileText(directory, 'skill.md');
+}
+
+export async function resolveSkillsDirectory(handle, targetId, { create = false } = {}) {
+  if (!handle) throw new Error('还没有选择该 Agent 的 skills 目录。');
+  if (!isAgentTarget(targetId)) throw new Error('不支持的 Agent。');
+  const name = normalizeFolderKey(handle.name);
+  if (name === 'skills') return { handle, displayName: handle.name || 'skills' };
+
+  const enterSkills = async (root, label) => {
+    const skills = await getChildDirectory(root, 'skills', create);
+    if (skills) return { handle: skills, displayName: `${label}/skills` };
+    return { handle: null, displayName: `${label}/skills` };
+  };
+
+  if (agentRootAliases(targetId).includes(name)) return enterSkills(handle, handle.name);
+
+  const children = await listChildDirectories(handle);
+  const agentChild = children.find((child) => agentRootAliases(targetId).includes(normalizeFolderKey(child.name)));
+  if (agentChild) return enterSkills(agentChild.handle, agentChild.name);
+  const skillsChild = children.find((child) => normalizeFolderKey(child.name) === 'skills');
+  if (skillsChild) return { handle: skillsChild.handle, displayName: `${handle.name}/skills` };
+  if (create) return enterSkills(handle, handle.name);
+  return { handle, displayName: handle.name || 'skills' };
 }
 
 export async function writeFileBytes(directory, name, bytes) {
@@ -84,7 +121,7 @@ export async function indexSkillDirectories(root) {
     async ensureYaml() {
       for (const item of pendingYaml) {
         if (item._yamlLoaded) continue;
-        item.yamlName = skillYamlName(await readFileText(item.handle, 'SKILL.md') ?? '');
+        item.yamlName = skillYamlName(await readSkillMarkdown(item.handle) ?? '');
         item._yamlLoaded = true;
         if (!item.yamlName) continue;
         const yamlKey = item.yamlName.trim().toLocaleLowerCase();

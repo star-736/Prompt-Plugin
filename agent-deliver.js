@@ -1,10 +1,10 @@
 export const DELIVERY_MARKER = '.futurecontext-delivery.json';
 export const AGENT_TARGETS = Object.freeze([
-  { id: 'claude', label: 'Claude Code', pathUnix: '~/.claude/skills', pathWindows: '%USERPROFILE%\\.claude\\skills' },
-  { id: 'cursor', label: 'Cursor', pathUnix: '~/.cursor/skills', pathWindows: '%USERPROFILE%\\.cursor\\skills' },
-  { id: 'codex', label: 'Codex', pathUnix: '~/.codex/skills', pathWindows: '%USERPROFILE%\\.codex\\skills' },
-  { id: 'hermes', label: 'Hermes Agent', pathUnix: '~/.hermes/skills', pathWindows: '%LOCALAPPDATA%\\hermes\\skills' },
-  { id: 'agents', label: '通用 Agent', pathUnix: '~/.agents/skills', pathWindows: '%USERPROFILE%\\.agents\\skills' }
+  { id: 'claude', label: 'Claude Code', pathUnix: '~/.claude', pathWindows: '%USERPROFILE%\\.claude' },
+  { id: 'cursor', label: 'Cursor', pathUnix: '~/.cursor', pathWindows: '%USERPROFILE%\\.cursor' },
+  { id: 'codex', label: 'Codex', pathUnix: '~/.codex', pathWindows: '%USERPROFILE%\\.codex' },
+  { id: 'hermes', label: 'Hermes Agent', pathUnix: '~/.hermes', pathWindows: '%LOCALAPPDATA%\\hermes' },
+  { id: 'agents', label: '通用 Agent', pathUnix: '~/.agents', pathWindows: '%USERPROFILE%\\.agents' }
 ]);
 export const AGENT_TARGET_IDS = Object.freeze(AGENT_TARGETS.map((target) => target.id));
 
@@ -22,6 +22,27 @@ export function agentPathHint(id, platform = globalThis.navigator?.platform ?? '
   const target = agentTarget(id);
   if (!target) return '';
   return /win/i.test(String(platform)) ? target.pathWindows : target.pathUnix;
+}
+
+export function agentFolderBindGuide(platform = globalThis.navigator?.platform ?? '') {
+  if (/win/i.test(String(platform))) {
+    return '选该 Agent 的目录即可（例如 .cursor），扩展会自动使用其中的 skills 子目录，没有就创建。点「选择目录」后把路径粘到弹出窗口顶部地址栏。不要选整个用户主目录。';
+  }
+  return '选该 Agent 的目录即可（例如 .cursor），扩展会自动使用其中的 skills 子目录，没有就创建。点「选择目录」后按 Command+Shift+G 粘贴路径。不要选整个用户主目录。';
+}
+
+export function folderPickerHelp(id, platform = globalThis.navigator?.platform ?? '') {
+  const path = agentPathHint(id, platform);
+  if (!path) return '';
+  if (/win/i.test(String(platform))) {
+    return `选 ${path} 这一层即可。扩展会自动进入 skills 子目录。路径默认隐藏：在文件夹窗口顶部地址栏粘贴后回车。不要选整个用户主目录。`;
+  }
+  return `选 ${path} 这一层即可。扩展会自动进入 skills 子目录。按 Command+Shift+G 粘贴路径前往。不要选整个用户主目录。`;
+}
+
+export function agentRootAliases(id) {
+  if (!isAgentTarget(id)) return [];
+  return [id, `.${id}`].map(normalizeFolderKey);
 }
 
 export function skillSlug(name, fallbackId = '') {
@@ -210,23 +231,26 @@ export function diskDeliveryWrite(status) {
 }
 
 export function deliveryStateLabel(status, { bound = false } = {}) {
-  if (status?.state === 'unbound') return '未选择目录，无法确认磁盘是否已有';
+  if (status?.state === 'unbound') return '未选择目录，请先在设置中绑定';
   if (status?.state === 'present') return '目录里已有 · 不是 FutureContext 投递的，撤回不会动它';
-  if (status?.state === 'delivered') return status.unconfirmed ? (bound ? '已投递 · 需要重新选择目录' : '已投递 · 未选择目录，无法确认磁盘是否仍在') : '已投递';
-  if (status?.state === 'stale') return status.unconfirmed ? (bound ? '库已更新 · 需要重新选择目录' : '库已更新 · 未选择目录，无法确认磁盘是否仍在') : '库已更新';
-  if (status?.unconfirmed) return bound ? '需要重新选择目录' : '无法确认磁盘是否已有';
-  return '未投递';
+  if (status?.state === 'delivered') return status.unconfirmed ? (bound ? '已投递 · 已记住目录，点一次允许访问即可对照' : '已投递 · 未选择目录，无法确认磁盘是否仍在') : '已投递';
+  if (status?.state === 'stale') return status.unconfirmed ? (bound ? '库已更新 · 已记住目录，点一次允许访问即可对照' : '库已更新 · 未选择目录，无法确认磁盘是否仍在') : '库已更新';
+  if (status?.unconfirmed) return bound ? '已记住目录，点一次允许访问即可对照' : '无法确认磁盘是否已有';
+  return '本地没有找到这份 Skill';
 }
 
 export function deliveryActionPlan(status) {
   if (!status || status.state === 'present') return {};
-  const plan = {};
-  if (status.state === 'unbound') plan.bind = true;
-  else if (status.state === 'idle') plan.deliver = 'deliver';
-  else if (status.state === 'stale') plan.deliver = 'update';
-  else if (status.state === 'delivered') plan.recall = true;
-  if (status.unconfirmed && status.state !== 'unbound') plan.bind = true;
-  return plan;
+  if (status.state === 'unbound') return { bind: true };
+  if (status.unconfirmed) {
+    if (status.state === 'delivered') return { recall: true };
+    if (status.state === 'stale') return { deliver: 'update' };
+    return { allow: true };
+  }
+  if (status.state === 'idle') return { deliver: 'deliver' };
+  if (status.state === 'stale') return { deliver: 'update' };
+  if (status.state === 'delivered') return { recall: true };
+  return {};
 }
 
 export function deliverySummary(asset) {

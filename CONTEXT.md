@@ -149,7 +149,7 @@ _Avoid_: 已同步、已安装、已投递
 _Avoid_: 卸载 Skill、回滚库、同步删除
 
 **Agent 目录绑定**:
-用户为某个 Agent 选择的本机 skills 文件夹。绑定只记住写入位置，不把库内 Skill 写进去。
+用户为某个 Agent 选择的本机目录（如 `.cursor`）。FutureContext 自动使用其中的 `skills` 子目录，没有则创建。绑定只记住写入位置，不把库内 Skill 写进去。
 _Avoid_: 自动发现 Agent 目录、全库同步
 
 **永久删除**:
