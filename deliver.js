@@ -1,7 +1,7 @@
 import { applyDatabaseChange, clearSkillDeliveryTarget, loadDatabase, setSkillDeliveryTarget } from './store.js';
 import { agentPathHint, agentTarget, createDeliveryMarker, deliveryFiles, deliveryRecord, folderPickerHelp, isAgentTarget, skillSlug } from './agent-deliver.js';
 import { deleteBinding, getBinding, putBinding } from './agent-folders.js';
-import { ensureReadWrite, recallDelivery, resolveSkillsDirectory, writeDelivery } from './agent-fs.js';
+import { ensureReadWrite, recallDelivery, refreshLocalSkill, resolveSkillsDirectory, scanSkillPresence, writeDelivery } from './agent-fs.js';
 import { getPackage } from './package-store.js';
 
 const app = globalThis.document?.querySelector?.('#app');
@@ -13,6 +13,7 @@ function escapeHtml(value = '') {
 
 function actionLabel(action) {
   if (action === 'recall') return '撤回投递';
+  if (action === 'refresh') return '更新本地';
   if (action === 'bind') return '选择目录';
   if (action === 'allow') return '允许访问';
   if (action === 'unbind') return '解除绑定';
@@ -77,7 +78,7 @@ async function resolveFolder(targetId, { pickFolder = false, allowAccess = false
 }
 
 export async function runDeliverAction({ action, assetId, target, pickFolder, allowAccess } = {}) {
-  if (!['deliver', 'recall', 'bind', 'allow', 'unbind'].includes(action)) throw new Error('不支持的投递操作。');
+  if (!['deliver', 'recall', 'refresh', 'bind', 'allow', 'unbind'].includes(action)) throw new Error('不支持的投递操作。');
   if (!isAgentTarget(target)) throw new Error('不支持的 Agent。');
   const info = agentTarget(target);
   if (action === 'unbind') {
@@ -104,6 +105,13 @@ export async function runDeliverAction({ action, assetId, target, pickFolder, al
   const asset = database.assets.find((item) => item.id === assetId && item.type === 'skill');
   if (!asset) throw new Error('找不到要投递的 Skill。');
   const root = await resolveFolder(target, { pickFolder: Boolean(pickFolder), allowAccess: Boolean(allowAccess) });
+  if (action === 'refresh') {
+    const inspection = await scanSkillPresence(root, { asset, assetId: asset.id, record: deliveryRecord(asset, target) });
+    if (inspection.kind === 'missing') throw new Error(`${info.label} 目录里没有找到这份 Skill。`);
+    const packageRecord = asset.skillPackage?.packageId ? await getPackage(asset.skillPackage.packageId) : null;
+    await refreshLocalSkill(root, { slug: inspection.slug, files: deliveryFiles(asset, packageRecord) });
+    return { message: `已用库里的版本更新 ${info.label} 里的本地副本。不是投递，撤回不会动它。` };
+  }
   if (action === 'recall') {
     const record = deliveryRecord(asset, target);
     const slug = record?.slug || skillSlug(asset.title, asset.id);
@@ -126,7 +134,7 @@ export async function bootDeliver() {
   const target = params.get('target') || '';
   const info = agentTarget(target);
   const title = actionLabel(action);
-  if (!info || !['deliver', 'recall', 'bind', 'allow', 'unbind'].includes(action) || (['deliver', 'recall'].includes(action) && !assetId)) {
+  if (!info || !['deliver', 'recall', 'refresh', 'bind', 'allow', 'unbind'].includes(action) || (['deliver', 'recall', 'refresh'].includes(action) && !assetId)) {
     renderState({ title, body: '缺少投递参数。', error: '请从 Skill 详情页重新打开。', done: true });
     return;
   }
@@ -134,6 +142,8 @@ export async function bootDeliver() {
     ? `把「当前 Skill」写入 ${info.label} 的 skills 目录。这不是自动同步，只影响这一条。`
     : action === 'recall'
       ? `从 ${info.label} 的 skills 目录删除 FutureContext 写下的副本。库里的收藏保留。`
+      : action === 'refresh'
+        ? `用库里的 SKILL.md 覆盖 ${info.label} 里已有的同名副本。不写投递标记，撤回不会删除它。`
       : action === 'bind'
         ? `为 ${info.label} 选择本机 skills 文件夹。选择本身不会写入任何 Skill。可先复制路径，再在文件夹窗口里粘贴前往。`
         : action === 'allow'

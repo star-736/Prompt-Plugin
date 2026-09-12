@@ -403,6 +403,7 @@ function renderDeliveryActions(asset, target, status) {
   if (plan.allow) buttons.push(`<button class="button button-ghost button-small" type="button" data-action="allow-agent-folder" data-target="${actionId}">允许访问</button>`);
   if (plan.deliver === 'deliver') buttons.push(`<button class="button button-ghost button-small" type="button" data-action="deliver-skill" data-id="${asset.id}" data-target="${actionId}">投递</button>`);
   if (plan.deliver === 'update') buttons.push(`<button class="button button-ghost button-small" type="button" data-action="deliver-skill" data-id="${asset.id}" data-target="${actionId}">更新投递</button>`);
+  if (plan.refresh) buttons.push(`<button class="button button-ghost button-small" type="button" data-action="refresh-skill" data-id="${asset.id}" data-target="${actionId}">更新本地</button>`);
   if (plan.recall) buttons.push(`<button class="button button-ghost button-small" type="button" data-action="recall-skill" data-id="${asset.id}" data-target="${actionId}">撤回</button>`);
   return buttons.length ? `<div class="setting-actions">${buttons.join('')}</div>` : '<span></span>';
 }
@@ -1115,6 +1116,7 @@ async function handleClick(event) {
   if (action === 'collect-github-skill') return collectGitHubSkillFromPage();
   if (action === 'update-github-skill') return updateGitHubSkill(button.dataset.id);
   if (action === 'deliver-skill') return runFolderAction('deliver', { assetId: button.dataset.id, target: button.dataset.target });
+  if (action === 'refresh-skill') return confirmRefreshSkill(button.dataset.id, button.dataset.target);
   if (action === 'recall-skill') return confirmRecallSkill(button.dataset.id, button.dataset.target);
   if (action === 'bind-agent-folder') return runFolderAction('bind', { target: button.dataset.target });
   if (action === 'allow-agent-folder') return runFolderAction('allow', { target: button.dataset.target });
@@ -1148,6 +1150,16 @@ async function runFolderAction(action, { assetId = '', target } = {}) {
     if (error?.name === 'AbortError' || /aborted|The user aborted/i.test(String(error.message || ''))) return;
     showToast(error.message || '操作失败。');
   }
+}
+
+function confirmRefreshSkill(assetId, target) {
+  const label = AGENT_TARGETS.find((item) => item.id === target)?.label ?? target;
+  showConfirm({
+    title: '更新本地',
+    description: `将用库里的版本覆盖 ${label} 里已有的同名 Skill。不写投递标记，撤回不会删除它。`,
+    actionLabel: '更新本地',
+    onConfirm: () => runFolderAction('refresh', { assetId, target })
+  });
 }
 
 function confirmRecallSkill(assetId, target) {

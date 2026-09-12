@@ -14,6 +14,7 @@ import {
   folderMatchesAsset,
   folderPickerHelp,
   inspectDeliveryDirectory,
+  skillContentsMatch,
   parseDeliveryMarker,
   resolveDeliveryStatus,
   safeSegments,
@@ -160,6 +161,22 @@ test('runDeliverAction delivers and recalls without deleting the library copy', 
   assert.match(recalledAgain.message, /已没有这份副本/);
 });
 
+test('runDeliverAction refresh overwrites a foreign copy without claiming it', async () => {
+  const indexedDb = createMemoryIndexedDB();
+  const stub = createChromeStub({ indexedDB: indexedDb });
+  seedDatabase(stub.local, saveAsset(createEmptyDatabase(), { type: 'skill', content: skill }, { id: 's1', now: 5 }).database);
+  const root = createMemoryDirectory();
+  const foreign = await root.getDirectoryHandle('Email-reviewer', { create: true });
+  await writeMemoryFile(foreign, 'SKILL.md', '---\nname: Email reviewer\ndescription: old\n---\nold');
+  await putBinding({ id: 'claude', handle: root, displayName: 'skills' }, indexedDb);
+  const refreshed = await runDeliverAction({ action: 'refresh', assetId: 's1', target: 'claude' });
+  assert.match(refreshed.message, /更新/);
+  assert.equal(stub.local['futurecontext.v1'].assets[0].skillDelivery, undefined);
+  const inspection = await scanSkillPresence(root, { asset: stub.local['futurecontext.v1'].assets[0], assetId: 's1' });
+  assert.equal(inspection.kind, 'foreign');
+  assert.equal(inspection.current, true);
+});
+
 test('runDeliverAction binds, unbinds, and rejects invalid requests', async () => {
   const indexedDb = createMemoryIndexedDB();
   const stub = createChromeStub({ indexedDB: indexedDb });
@@ -303,6 +320,7 @@ test('resolveDeliveryStatus distinguishes disk, metadata, and unbound folders', 
   assert.equal(resolveDeliveryStatus(asset, 'claude', { bound: true }).unconfirmed, true);
   assert.equal(resolveDeliveryStatus(asset, 'claude', { bound: true, disk: { kind: 'missing' } }).state, 'idle');
   assert.equal(resolveDeliveryStatus(asset, 'claude', { bound: true, disk: { kind: 'foreign', slug: 'Email-reviewer' } }).state, 'present');
+  assert.equal(resolveDeliveryStatus(asset, 'claude', { bound: true, disk: { kind: 'foreign', slug: 'Email-reviewer', current: false } }).state, 'outdated');
   assert.equal(resolveDeliveryStatus(asset, 'claude', { bound: true, disk: { kind: 'ours-other', slug: 'Email-reviewer' } }).state, 'present');
   const ours = resolveDeliveryStatus({ id: 's1', updatedAt: 5 }, 'claude', {
     bound: true,
@@ -315,7 +333,8 @@ test('resolveDeliveryStatus distinguishes disk, metadata, and unbound folders', 
     disk: { kind: 'ours', slug: 'Email-reviewer', marker: { contentUpdatedAt: 5, deliveredAt: 4 } }
   }).state, 'stale');
   assert.equal(deliveryStateLabel({ state: 'unbound' }), '未选择目录，请先在设置中绑定');
-  assert.match(deliveryStateLabel({ state: 'present' }), /目录里已有/);
+  assert.match(deliveryStateLabel({ state: 'present' }), /版本一致/);
+  assert.match(deliveryStateLabel({ state: 'outdated' }), /版本不一致/);
   assert.equal(deliveryStateLabel({ state: 'idle' }), '本地没有找到这份 Skill');
   assert.equal(deliveryStateLabel({ state: 'idle', unconfirmed: true }), '无法确认磁盘是否已有');
   assert.equal(deliveryStateLabel({ state: 'delivered' }), '已投递');
@@ -326,12 +345,14 @@ test('resolveDeliveryStatus distinguishes disk, metadata, and unbound folders', 
   assert.equal(deliveryActionPlan({ state: 'idle', unconfirmed: true }).allow, true);
   assert.equal(deliveryActionPlan({ state: 'idle', unconfirmed: true }).bind, undefined);
   assert.deepEqual(deliveryActionPlan({ state: 'present' }), {});
+  assert.equal(deliveryActionPlan({ state: 'outdated' }).refresh, true);
   assert.equal(deliveryActionPlan({ state: 'unbound' }).bind, true);
   assert.equal(deliveryActionPlan({ state: 'idle' }).deliver, 'deliver');
   assert.equal(deliveryActionPlan({ state: 'stale' }).deliver, 'update');
   assert.equal(deliveryActionPlan({ state: 'delivered' }).recall, true);
   assert.equal(diskDeliveryWrite({ state: 'delivered', record: { slug: 'x' } }).action, 'set');
   assert.equal(diskDeliveryWrite({ state: 'present' }).action, 'clear');
+  assert.equal(diskDeliveryWrite({ state: 'outdated' }).action, 'clear');
   assert.equal(diskDeliveryWrite({ state: 'unbound' }).action, 'none');
   assert.equal(sameDeliveryRecord({ slug: 'a', deliveredAt: 1, contentUpdatedAt: 2 }, { slug: 'a', deliveredAt: 1, contentUpdatedAt: 2 }), true);
   assert.equal(sameDeliveryRecord({ slug: 'a', deliveredAt: 1, contentUpdatedAt: 2 }, { slug: 'b', deliveredAt: 1, contentUpdatedAt: 2 }), false);
@@ -346,6 +367,10 @@ test('scanSkillPresence matches marked, foreign, case, and YAML-only folders', a
   const same = await scanSkillPresence(root, { asset, assetId: 's1' });
   assert.equal(same.kind, 'foreign');
   assert.equal(same.slug, 'email-reviewer');
+  assert.equal(same.current, true);
+  await writeMemoryFile(foreign, 'SKILL.md', '---\nname: Email reviewer\ndescription: other\n---\nchanged');
+  assert.equal((await scanSkillPresence(root, { asset, assetId: 's1' })).current, false);
+  assert.equal(skillContentsMatch(skill, `\uFEFF${skill.replace(/\n/g, '\r\n')}`), true);
   const marked = createMemoryDirectory();
   const ours = await marked.getDirectoryHandle('Email-reviewer', { create: true });
   await writeMemoryFile(ours, 'SKILL.md', skill);

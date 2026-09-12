@@ -5,6 +5,7 @@ import {
   inspectDeliveryDirectory,
   isAgentTarget,
   normalizeFolderKey,
+  skillContentsMatch,
   skillFolderCandidates,
   skillSlug,
   skillYamlName
@@ -158,7 +159,12 @@ export async function scanSkillPresence(root, { asset, assetId, record }, index)
   }
   if (!item) return { kind: 'missing' };
   const markerText = await readFileText(item.handle, DELIVERY_MARKER);
-  return { ...inspectDeliveryDirectory({ exists: true, markerText, assetId }), slug: item.name };
+  const diskSkill = await readSkillMarkdown(item.handle);
+  return {
+    ...inspectDeliveryDirectory({ exists: true, markerText, assetId }),
+    slug: item.name,
+    current: skillContentsMatch(asset?.content, diskSkill)
+  };
 }
 
 export async function inspectWritableSlot(root, slug, assetId) {
@@ -171,14 +177,23 @@ export async function inspectWritableSlot(root, slug, assetId) {
   return verdict;
 }
 
-export async function writeDelivery(root, { slug, files, marker, assetId }) {
-  await inspectWritableSlot(root, slug, assetId);
+export async function writeSkillFiles(root, { slug, files }) {
   const skillDir = await root.getDirectoryHandle(slug, { create: true });
   for (const file of files) {
     const { directory, name } = await ensureParent(skillDir, file.segments);
     await writeFileBytes(directory, name, file.bytes);
   }
+  return skillDir;
+}
+
+export async function writeDelivery(root, { slug, files, marker, assetId }) {
+  await inspectWritableSlot(root, slug, assetId);
+  const skillDir = await writeSkillFiles(root, { slug, files });
   await writeFileBytes(skillDir, DELIVERY_MARKER, new TextEncoder().encode(`${JSON.stringify(marker, null, 2)}\n`));
+}
+
+export async function refreshLocalSkill(root, { slug, files }) {
+  await writeSkillFiles(root, { slug, files });
 }
 
 export async function recallDelivery(root, { slug, assetId }) {

@@ -92,6 +92,12 @@ if (t.name.includes('present on disk')) {
   await writeMemoryFile(skillDir, 'SKILL.md', skill);
   await putBinding({ id: 'cursor', handle: root, displayName: 'skills' }, indexedDb);
 }
+if (t.name.includes('outdated on disk')) {
+  const root = createMemoryDirectory();
+  const skillDir = await root.getDirectoryHandle('Email-reviewer', { create: true });
+  await writeMemoryFile(skillDir, 'SKILL.md', '---\nname: Email reviewer\ndescription: old copy\n---\nold');
+  await putBinding({ id: 'cursor', handle: root, displayName: 'skills' }, indexedDb);
+}
 if (t.name.includes('scan recovers marked')) {
   const root = createMemoryDirectory();
   const skillDir = await root.getDirectoryHandle('Email-reviewer', { create: true });
@@ -271,10 +277,24 @@ test('present on disk skill is not recallable', async () => {
   await waitFor(() => document.querySelector('[data-id="s1"]'));
   click('[data-action="open-asset"][data-id="s1"]');
   await waitFor(() => /目录里已有/.test(document.querySelector('#app').textContent));
-  assert.match(document.querySelector('#app').textContent, /不是 FutureContext 投递的，撤回不会动它/);
+  assert.match(document.querySelector('#app').textContent, /版本一致/);
   assert.equal(document.querySelector('[data-action="deliver-skill"][data-target="cursor"]'), null);
+  assert.equal(document.querySelector('[data-action="refresh-skill"][data-target="cursor"]'), null);
   assert.equal(document.querySelector('[data-action="recall-skill"][data-target="cursor"]'), null);
   assert.equal(stub.local['futurecontext.v1'].assets.find((asset) => asset.id === 's1').skillDelivery, undefined);
+});
+
+test('outdated on disk skill can refresh the local copy', async () => {
+  click('[data-tab="skill"]');
+  await waitFor(() => document.querySelector('[data-id="s1"]'));
+  click('[data-action="open-asset"][data-id="s1"]');
+  await waitFor(() => /版本不一致/.test(document.querySelector('#app').textContent));
+  assert.equal(document.querySelector('[data-action="recall-skill"][data-target="cursor"]'), null);
+  click('[data-action="refresh-skill"][data-target="cursor"]');
+  await waitFor(() => /更新本地/.test(document.querySelector('#confirm-title')?.textContent || ''));
+  confirmOpenDialog();
+  await waitFor(() => /更新/.test(toastText()));
+  assert.equal(globalThis.chrome.windows.created.length, 0);
 });
 
 test('scan recovers marked delivery into skillDelivery', async () => {

@@ -118,6 +118,14 @@ export function inspectDeliveryDirectory({ exists, markerText, assetId }) {
   return { kind: 'ours-other', marker };
 }
 
+export function normalizeSkillText(text) {
+  return String(text ?? '').replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/[ \t]+$/gm, '').replace(/\s+$/, '');
+}
+
+export function skillContentsMatch(left, right) {
+  return normalizeSkillText(left) === normalizeSkillText(right);
+}
+
 export function skillYamlName(content) {
   const source = String(content ?? '').replace(/^\uFEFF/, '');
   const match = source.match(/^---\s*\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n|$)/);
@@ -193,18 +201,7 @@ export function sameDeliveryRecord(left, right) {
   return Boolean(left && right && left.slug === right.slug && Number(left.deliveredAt ?? 0) === Number(right.deliveredAt ?? 0) && Number(left.contentUpdatedAt ?? 0) === Number(right.contentUpdatedAt ?? 0));
 }
 
-export function resolveDeliveryStatus(asset, target, { bound = false, disk } = {}) {
-  const record = deliveryRecord(asset, target);
-  if (!bound) {
-    if (!record) return { state: 'unbound', record: null };
-    const stale = Number(asset?.updatedAt ?? 0) > Number(record.contentUpdatedAt ?? 0);
-    return { state: stale ? 'stale' : 'delivered', record, unconfirmed: true };
-  }
-  if (disk == null) {
-    if (!record) return { state: 'idle', record: null, unconfirmed: true };
-    const stale = Number(asset?.updatedAt ?? 0) > Number(record.contentUpdatedAt ?? 0);
-    return { state: stale ? 'stale' : 'delivered', record, unconfirmed: true };
-  }
+function statusFromDisk(asset, target, disk, record) {
   if (disk.kind === 'ours') {
     const contentUpdatedAt = Number(disk.marker?.contentUpdatedAt ?? record?.contentUpdatedAt ?? 0);
     const deliveredAt = Number(disk.marker?.deliveredAt ?? record?.deliveredAt ?? 0);
@@ -219,20 +216,36 @@ export function resolveDeliveryStatus(asset, target, { bound = false, disk } = {
     };
   }
   if (disk.kind === 'foreign' || disk.kind === 'ours-other') {
-    return { state: 'present', record: null, slug: disk.slug ?? null };
+    return { state: disk.current === false ? 'outdated' : 'present', record: null, slug: disk.slug ?? null };
   }
   return { state: 'idle', record: null };
 }
 
+export function resolveDeliveryStatus(asset, target, { bound = false, disk } = {}) {
+  const record = deliveryRecord(asset, target);
+  if (!bound) {
+    if (!record) return { state: 'unbound', record: null };
+    const stale = Number(asset?.updatedAt ?? 0) > Number(record.contentUpdatedAt ?? 0);
+    return { state: stale ? 'stale' : 'delivered', record, unconfirmed: true };
+  }
+  if (disk == null) {
+    if (!record) return { state: 'idle', record: null, unconfirmed: true };
+    const stale = Number(asset?.updatedAt ?? 0) > Number(record.contentUpdatedAt ?? 0);
+    return { state: stale ? 'stale' : 'delivered', record, unconfirmed: true };
+  }
+  return statusFromDisk(asset, target, disk, record);
+}
+
 export function diskDeliveryWrite(status) {
   if (status?.state === 'delivered' || status?.state === 'stale') return { action: 'set', record: status.record };
-  if (status?.state === 'idle' || status?.state === 'present') return { action: 'clear' };
+  if (status?.state === 'idle' || status?.state === 'present' || status?.state === 'outdated') return { action: 'clear' };
   return { action: 'none' };
 }
 
 export function deliveryStateLabel(status, { bound = false } = {}) {
   if (status?.state === 'unbound') return '未选择目录，请先在设置中绑定';
-  if (status?.state === 'present') return '目录里已有 · 不是 FutureContext 投递的，撤回不会动它';
+  if (status?.state === 'present') return '目录里已有 · 版本一致，撤回不会动它';
+  if (status?.state === 'outdated') return '目录里已有 · 版本不一致';
   if (status?.state === 'delivered') return status.unconfirmed ? (bound ? '已投递 · 已记住目录，点一次允许访问即可对照' : '已投递 · 未选择目录，无法确认磁盘是否仍在') : '已投递';
   if (status?.state === 'stale') return status.unconfirmed ? (bound ? '库已更新 · 已记住目录，点一次允许访问即可对照' : '库已更新 · 未选择目录，无法确认磁盘是否仍在') : '库已更新';
   if (status?.unconfirmed) return bound ? '已记住目录，点一次允许访问即可对照' : '无法确认磁盘是否已有';
@@ -249,6 +262,7 @@ export function deliveryActionPlan(status) {
   }
   if (status.state === 'idle') return { deliver: 'deliver' };
   if (status.state === 'stale') return { deliver: 'update' };
+  if (status.state === 'outdated') return { refresh: true };
   if (status.state === 'delivered') return { recall: true };
   return {};
 }
