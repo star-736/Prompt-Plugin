@@ -11,6 +11,12 @@ FutureContext 是一个本地优先的 Edge / Chrome 扩展，用于保存、分
 
 ## 当前能力
 
+### 新标签页中的 Skill 阅读
+
+点击右上角「在新标签页中打开」，进入 Skill 标签后，左侧选择 Skill，右侧默认完整渲染根目录 `SKILL.md`。名称与描述单独展示，正文保留标题、列表、表格和代码块；宽屏右侧显示可折叠文件树，文件夹按层级展开，包内 Markdown 链接可以直接打开已保存的辅助文件；窄屏时文件树移到正文上方，首次打开默认收起。单文件 Skill 点击「编辑 Skill」修改，GitHub Skill 点击「管理 Skill」进入分类、投递和更新等操作。窄屏自动上下排列。
+
+Markdown 渲染依赖随扩展打包在 `vendor/` 中，发布时必须包含 `skill-reader.js` 和整个 `vendor/` 目录；不从 CDN 加载脚本。
+
 ### GitHub 收集认证
 
 在扩展「设置 → GitHub Token（可选）」粘贴个人访问令牌并保存；再次填写可替换，点击「移除 Token」恢复匿名请求。Token 用于提高公开仓库的 GitHub API 额度，并让失败原因更清楚。保存仅验证格式，不向 GitHub 发起请求；额度、权限或过期问题会在收集/更新时提示。可从 [GitHub Token 设置](https://github.com/settings/tokens) 创建令牌。

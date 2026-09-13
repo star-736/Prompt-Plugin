@@ -159,3 +159,78 @@ html:not(.toolbar-popup) .field textarea.skill-editor { min-height: clamp(220px,
   .inline-create input { flex-basis: 100%; }
   .gate-card { padding: 20px 16px; }
 }
+
+/* The full-page Skill library gives the document its own reading space. */
+.skill-workspace { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 28px; align-items: start; max-width: 1360px; margin: 24px auto 0; }
+.skill-navigation { position: sticky; top: 20px; max-height: calc(100vh - 40px); overflow: auto; display: grid; gap: 6px; padding: 0 8px 12px 0; }
+.skill-list-heading { display: flex; justify-content: space-between; padding: 8px 12px 12px; color: #6b7789; font-size: 12px; font-weight: 650; }
+.skill-list-item { background: transparent; border: 1px solid transparent; border-radius: 10px; color: #344256; display: grid; gap: 7px; padding: 14px 12px; text-align: left; min-width: 0; overflow-wrap: anywhere; }
+.skill-list-item:hover { background: #eef2f7; }
+.skill-list-item.is-selected { background: #e8eff9; border-color: #cfdded; }
+.skill-list-item strong { font-size: 14px; }
+.skill-list-item span { font-size: 12px; color: #68788d; line-height: 1.6; }
+.skill-list-item small { color: #7c899b; font-size: 11px; }
+.skill-navigation > .button { margin-top: 12px; }
+.skill-reader { min-width: 0; background: #fff; border: 1px solid #e1e7ee; border-radius: 16px; padding: clamp(20px, 3vw, 48px); }
+.reader-header { border-bottom: 1px solid #e8ecf2; padding-bottom: 26px; }
+.reader-eyebrow { color: #6c829c; letter-spacing: .06em; font-size: 11px; font-weight: 650; }
+.reader-header h1 { font-size: clamp(24px, 2.5vw, 34px); line-height: 1.25; margin: 12px 0; letter-spacing: -.025em; }
+.reader-description { color: #65758a; font-size: 15px; line-height: 1.8; margin: 0 0 20px; white-space: pre-wrap; }
+.reader-files { background: #f7f9fc; border: 1px solid #e5eaf1; border-radius: 8px; margin-top: 22px; padding: 12px 14px; }
+.reader-files summary { cursor: pointer; font-size: 12px; color: #5c6e84; }
+.reader-files nav { display: grid; gap: 4px; margin-top: 12px; max-height: 300px; overflow: auto; }
+.reader-file { text-align: left; background: transparent; border: 0; border-radius: 5px; color: #526c8c; font: 12px/1.6 var(--skill-mono-font); padding: 6px 8px; overflow-wrap: anywhere; }
+.reader-file:hover, .reader-file.is-selected { background: #e7eef7; }
+.reader-file-heading { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; color: #8692a2; font: 11px/1.6 var(--skill-mono-font); padding-top: 24px; scroll-margin-top: 20px; }
+.reader-note { color: #7b8797; font-size: 12px; line-height: 1.7; }
+.skill-markdown { font-size: 15px; line-height: 1.85; color: #344154; overflow-wrap: anywhere; }
+.skill-markdown h1, .skill-markdown h2, .skill-markdown h3, .skill-markdown h4 { color: #253449; line-height: 1.4; margin: 1.6em 0 .7em; scroll-margin-top: 24px; }
+.skill-markdown h1 { font-size: 26px; }
+.skill-markdown h2 { font-size: 22px; border-bottom: 1px solid #e8edf3; padding-bottom: 10px; }
+.skill-markdown h3 { font-size: 18px; }
+.skill-markdown p { margin: 1em 0; }
+.skill-markdown li { margin: .35em 0; }
+.skill-markdown pre { background: #f5f7fa; border: 1px solid #e4eaf1; border-radius: 9px; padding: 18px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; max-height: none; }
+.skill-markdown code { font: 13px/1.75 var(--skill-mono-font); background: #f0f3f7; border-radius: 4px; padding: 2px 4px; }
+.skill-markdown pre code { background: none; padding: 0; }
+.skill-markdown blockquote { border-left: 3px solid #9bb4d1; margin: 20px 0; padding: 1px 20px; color: #64758b; background: #f8fafc; }
+.skill-markdown table { display: block; max-width: 100%; overflow: auto; border-collapse: collapse; margin: 20px 0; }
+.skill-markdown th, .skill-markdown td { padding: 9px 14px; border: 1px solid #dfe6ee; text-align: left; }
+.skill-markdown th { background: #f5f8fc; }
+.skill-markdown a { color: #466f9e; text-underline-offset: 3px; }
+.skill-markdown hr { border: 0; border-top: 1px solid #e4eaf1; margin: 28px 0; }
+@media (max-width: 900px) {
+  .skill-workspace { grid-template-columns: 210px minmax(0, 1fr); gap: 16px; }
+}
+@media (max-width: 680px) {
+  .skill-workspace { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .skill-navigation { position: static; max-height: 240px; }
+  .skill-reader { padding: 20px; }
+}
+
+/* A package tree beside the document keeps file navigation within reach. */
+.skill-workspace { max-width: 1600px; grid-template-columns: 230px minmax(0, 1fr); gap: 22px; }
+.reader-layout { display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; min-width: 0; gap: 20px; }
+.reader-layout:has(> .reader-files) { grid-template-columns: minmax(0, 1fr) 220px; }
+.reader-layout > .reader-files { position: sticky; top: 20px; margin: 0; padding: 14px 10px; }
+.reader-files > summary { padding: 2px 4px; }
+.reader-files nav { max-height: calc(100vh - 120px); gap: 3px; }
+.reader-file { display: flex; align-items: baseline; gap: 7px; width: 100%; min-width: 0; }
+.reader-file-icon { flex: none; color: #8798ae; }
+.reader-file:hover { background: #f0f3f8; }
+.reader-file.is-selected { background: #e1ebf8; color: #315f96; font-weight: 650; }
+.reader-folder { min-width: 0; }
+.reader-folder > summary { display: flex; align-items: center; gap: 6px; list-style: none; padding: 7px 6px; }
+.reader-folder > summary::-webkit-details-marker { display: none; }
+.reader-folder > summary::before { content: '▸'; color: #8b98a9; flex: none; }
+.reader-folder[open] > summary::before { content: '▾'; }
+.reader-tree-children { display: grid; gap: 3px; border-left: 1px solid #dce4ee; margin-left: 12px; padding-left: 8px; }
+@media (max-width: 1099px) {
+  .skill-workspace { grid-template-columns: 210px minmax(0, 1fr); gap: 16px; }
+  .reader-layout:has(> .reader-files) { grid-template-columns: minmax(0, 1fr); }
+  .reader-layout > .reader-files { position: static; order: -1; }
+  .reader-files nav { max-height: 280px; }
+}
+@media (max-width: 680px) {
+  .skill-workspace { grid-template-columns: minmax(0, 1fr); }
+}

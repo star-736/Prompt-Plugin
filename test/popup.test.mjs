@@ -27,7 +27,7 @@ function withSites(database, sites) {
 
 let window, document, indexedDb, stub, messages;
 beforeEach(async (t) => {
-({ window, document } = installDom(popupHtml(), { url: 'https://github.com/acme/demo/blob/main/skills/demo/SKILL.md' }));
+({ window, document } = installDom(popupHtml(), { url: t.name.startsWith('full-page Skill') ? 'https://github.com/acme/demo/popup.html?mode=tab&asset=s1' : 'https://github.com/acme/demo/blob/main/skills/demo/SKILL.md' }));
 indexedDb = createMemoryIndexedDB();
 messages = [];
 stub = createChromeStub({
@@ -219,6 +219,39 @@ test('popup edges resize along their own axes and the corner grows left and down
     assert.equal(root.style.width, width);
     assert.equal(root.style.height, height);
   }
+});
+
+test('full-page Skill opens the selected SKILL.md as a document instead of an editor', async () => {
+  await waitFor(() => document.querySelector('.skill-markdown h1'));
+  assert.equal(document.querySelector('.skill-markdown h1').textContent, 'Instructions');
+  assert.match(document.querySelector('.reader-description').textContent, /Review email drafts/);
+  assert.doesNotMatch(document.querySelector('.skill-markdown').textContent, /name: Email reviewer/);
+  assert.equal(document.querySelector('#editor-form'), null);
+  assert.ok(document.querySelector('.skill-list-item.is-selected[data-id="s1"]'));
+  click('[data-action="manage-reader-skill"]');
+  await waitFor(() => document.querySelector('#editor-content'));
+  assert.equal(document.querySelector('#editor-content').value, skill);
+});
+
+test('full-page Skill package defaults to root document and opens auxiliary files on demand', async () => {
+  click('[data-action="read-skill"][data-id="skill-gh"]');
+  await waitFor(() => document.querySelector('[data-path="agents/openai.yaml"]'));
+  const folder = document.querySelector('[data-reader-folder="agents"]');
+  assert.ok(folder.querySelector('[data-path="agents/openai.yaml"]'));
+  assert.equal(folder.querySelector('.reader-file span:last-child').textContent, 'openai.yaml');
+  assert.equal(folder.open, false);
+  assert.equal(document.querySelector('.skill-reader .reader-files'), null);
+  assert.ok(document.querySelector('.reader-layout > .reader-files'));
+  assert.equal(document.querySelector('.reader-files').open, false);
+  assert.equal(document.querySelector('.reader-file-heading span').textContent, 'SKILL.md');
+  document.querySelector('.reader-files').open = true;
+  click('[data-path="agents/openai.yaml"]');
+  assert.match(document.querySelector('.skill-markdown pre').textContent, /model: gpt-4/);
+  assert.equal(document.querySelector('.reader-files').open, true);
+  assert.equal(document.querySelector('[data-reader-folder="agents"]').open, true);
+  click('[data-action="read-skill-file"][data-path="SKILL.md"]');
+  assert.equal(document.querySelector('.skill-markdown h1').textContent, 'Instructions');
+  assert.ok(document.querySelector('.skill-navigation'));
 });
 
 function holdRuntimeMessage(type) {

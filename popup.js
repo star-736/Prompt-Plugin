@@ -54,6 +54,7 @@ import { AGENT_TARGETS, agentFolderBindGuide, agentPathHint, deliveryActionPlan,
 import { getBinding, listBindings } from './agent-folders.js';
 import { canReadHandle, indexSkillDirectories, resolveSkillsDirectory, scanSkillPresence } from './agent-fs.js';
 import { runDeliverAction } from './deliver.js';
+import { renderSkillMarkdown, skillBody } from './skill-reader.js';
 
 const app = document.querySelector('#app');
 const toast = document.querySelector('#toast');
@@ -64,6 +65,13 @@ const confirmDescription = document.querySelector('#confirm-description');
 const confirmAction = document.querySelector('#confirm-action');
 const pageParams = new URLSearchParams(window.location.search);
 const standaloneTab = pageParams.get('mode') === 'tab';
+let readerAssetId = pageParams.get('asset');
+let readerPath = 'SKILL.md';
+let readerPackage = null;
+let readerPackageKey = null;
+let readerPackageError = false;
+let readerFilesOpen = window.innerWidth >= 1100;
+let readerFolderOpen = new Map();
 if (standaloneTab) {
   document.documentElement.classList.remove('toolbar-popup');
   document.querySelector('[data-action="open-tab"]').hidden = true;
@@ -392,7 +400,65 @@ function renderLibrary() {
     ${showsCategoryPicker() ? renderCategoryPicker() : ''}
     <button class="button button-primary" type="button" data-action="new-asset">+ 新建</button>
   </div>`;
-  return `${renderReadOnlyBanner()}${renderNoticeBanner()}${renderSiteHint()}${renderTabs()}${renderSubtabs()}${tools}${privateGate ? renderPrivateGate() : renderAssetList()}`;
+  return `${renderReadOnlyBanner()}${renderNoticeBanner()}${renderSiteHint()}${renderTabs()}${renderSubtabs()}${tools}${privateGate ? renderPrivateGate() : standaloneTab && state.activeTab === 'skill' ? renderSkillWorkspace() : renderAssetList()}`;
+}
+
+function renderSkillWorkspace() {
+  const assets = assetsFor(state.database, { type: 'skill', privacy: 'normal', query: state.search, categoryId: state.categoryId, sortBy: sortByFor(state.database, 'skill') });
+  if (!assets.length) return renderAssetList();
+  const asset = assets.find((item) => item.id === readerAssetId) ?? assets[0];
+  if (readerAssetId !== asset.id) { readerAssetId = asset.id; readerPath = 'SKILL.md'; readerFilesOpen = window.innerWidth >= 1100; readerFolderOpen.clear(); }
+  const packageId = asset.skillPackage?.packageId;
+  const key = packageId ? `${asset.id}:${packageId}:${asset.updatedAt}` : null;
+  if (key !== readerPackageKey) {
+    readerPackageKey = key;
+    readerPackage = null;
+    readerPackageError = false;
+    if (packageId) void getPackage(packageId).then((record) => {
+      if (readerPackageKey !== key) return;
+      readerPackage = record;
+      readerPackageError = !record;
+      if (state.view === 'library' && state.activeTab === 'skill') render();
+    }).catch(() => {
+      if (readerPackageKey !== key) return;
+      readerPackageError = true;
+      if (state.view === 'library' && state.activeTab === 'skill') render();
+    });
+  }
+  const files = readerPackage?.files ?? [];
+  const file = files.find((item) => item.path === readerPath);
+  const text = readerPath === 'SKILL.md' ? (file ? decodePackageText(file) : asset.content) : file && isTextFile(file.path, file.contentType) ? decodePackageText(file) : null;
+  const markdown = /\.md$/i.test(readerPath);
+  const body = text === null ? '<p class="reader-note">此文件为二进制资源，暂不支持正文预览。</p>' : markdown ? renderSkillMarkdown(readerPath === 'SKILL.md' ? skillBody(text) : text, readerPath) : `<pre><code>${escapeHtml(text)}</code></pre>`;
+  const navigation = assets.map((item) => `<button type="button" class="skill-list-item ${item.id === asset.id ? 'is-selected' : ''}" data-action="read-skill" data-id="${escapeHtml(item.id)}" aria-current="${item.id === asset.id ? 'true' : 'false'}"><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.skillDescription ?? '')}</span><small>${escapeHtml(categoryName(item.categoryId))}</small></button>`).join('');
+  const fileButtons = renderReaderTree(buildPackageFileTree([{ path: 'SKILL.md' }, ...files.filter((item) => item.path !== 'SKILL.md')]));
+  return `<div class="skill-workspace"><aside class="skill-navigation" aria-label="Skill 列表"><div class="skill-list-heading">Skill <span>${assets.length}</span></div>${navigation}<button class="button button-ghost" type="button" data-action="collect-github-skill">从当前 GitHub 页面收集</button></aside><div class="reader-layout"><section class="skill-reader" aria-label="Skill 阅读区"><header class="reader-header"><div class="reader-eyebrow">SKILL / ${escapeHtml(categoryName(asset.categoryId))}</div><h1>${escapeHtml(asset.title)}</h1><p class="reader-description">${escapeHtml(asset.skillDescription ?? '')}</p><div class="section-actions"><button class="button button-primary" type="button" data-action="copy-asset" data-id="${escapeHtml(asset.id)}">复制 SKILL.md</button><button class="button button-ghost" type="button" data-action="manage-reader-skill" data-id="${escapeHtml(asset.id)}">${packageId ? '管理 Skill' : '编辑 Skill'}</button><button class="button button-ghost" type="button" data-action="toggle-pin" data-id="${escapeHtml(asset.id)}">${asset.pinned ? '取消置顶' : '置顶'}</button></div></header><div class="reader-file-heading"><span>${escapeHtml(readerPath)}</span>${readerPath !== 'SKILL.md' ? '<button class="inline-action" type="button" data-action="read-skill-file" data-path="SKILL.md">返回 SKILL.md</button>' : ''}</div><article class="skill-markdown">${body}</article></section>${packageId ? `<details class="reader-files" ${readerFilesOpen ? 'open' : ''}><summary>文件目录 · ${asset.skillPackage.fileCount ?? files.length} 个文件</summary><nav aria-label="Skill 文件">${fileButtons}</nav>${readerPackageError ? '<p class="reader-note">辅助文件读取失败，仍可阅读已保存的 SKILL.md。</p>' : !readerPackage ? '<p class="reader-note">正在读取辅助文件…</p>' : ''}</details>` : ''}</div></div>`;
+}
+
+function renderReaderTree(nodes) {
+  return nodes.map((node) => {
+    if (node.type === 'dir') {
+      const open = readerFolderOpen.get(node.path) ?? readerPath.startsWith(`${node.path}/`);
+      return `<details class="reader-folder" data-reader-folder="${escapeHtml(node.path)}" ${open ? 'open' : ''}><summary>${folderIcon()}<span>${escapeHtml(node.name)}</span></summary><div class="reader-tree-children">${renderReaderTree(node.children)}</div></details>`;
+    }
+    return `<button type="button" class="reader-file ${readerPath === node.path ? 'is-selected' : ''}" data-action="read-skill-file" data-path="${escapeHtml(node.path)}" aria-current="${readerPath === node.path ? 'true' : 'false'}" title="${escapeHtml(node.path)}"><span class="reader-file-icon" aria-hidden="true">≡</span><span>${escapeHtml(node.name)}</span></button>`;
+  }).join('');
+}
+
+function readSkillFile(path, hash = '') {
+  if (path !== 'SKILL.md' && !readerPackage?.files.some((file) => file.path === path)) { showToast('该文件不在已保存的 Skill 包中。'); return; }
+  readerFilesOpen = document.querySelector('.reader-files')?.open ?? false;
+  document.querySelectorAll('[data-reader-folder]').forEach((folder) => readerFolderOpen.set(folder.dataset.readerFolder, folder.open));
+  readerPath = path;
+  const parts = path.split('/');
+  for (let i = 1; i < parts.length; i++) readerFolderOpen.set(parts.slice(0, i).join('/'), true);
+  render();
+  if (hash) scrollSkillHeading(hash);
+  else document.querySelector('.reader-file-heading')?.scrollIntoView?.({ block: 'start' });
+}
+
+function scrollSkillHeading(hash) {
+  try { document.getElementById(`skill-heading-${decodeURIComponent(hash)}`)?.scrollIntoView?.({ block: 'start' }); } catch { /* Ignore malformed anchors. */ }
 }
 
 function editorValues() {
@@ -651,6 +717,7 @@ let renderedView = null;
 
 function render() {
   if (!state.database) return;
+  const navigationScroll = document.querySelector('.skill-navigation')?.scrollTop ?? 0;
   const viewChanged = state.view !== renderedView;
   renderedView = state.view;
   if (state.view === 'editor') app.innerHTML = renderEditor();
@@ -665,6 +732,8 @@ function render() {
   else if (state.view === 'package-detail') app.innerHTML = renderPackageDetail();
   else if (state.view === 'reset-lock') app.innerHTML = renderReadOnlyBanner() + renderLockReset();
   else app.innerHTML = renderLibrary();
+  const navigation = document.querySelector('.skill-navigation');
+  if (navigation) navigation.scrollTop = navigationScroll;
   if (viewChanged) {
     document.documentElement.scrollTop = 0;
     document.body.scrollTop = 0;
@@ -978,8 +1047,18 @@ async function importBackup(file) {
   }
 }
 
-async function openAsset(asset) {
+async function openAsset(asset, manage = false) {
   if (!asset) return;
+  if (standaloneTab && asset.type === 'skill' && !manage) {
+    readerAssetId = asset.id;
+    readerPath = 'SKILL.md';
+    readerFilesOpen = window.innerWidth >= 1100; readerFolderOpen.clear();
+    state.view = 'library';
+    state.activeTab = 'skill';
+    render();
+    document.querySelector('.reader-header')?.scrollIntoView?.({ block: 'start' });
+    return;
+  }
   if (asset.skillPackage?.packageId) {
     state.packageAssetId = asset.id;
     state.packageRecord = await getPackage(asset.skillPackage.packageId);
@@ -1089,6 +1168,9 @@ async function updateGitHubSkill(id) {
 }
 
 async function handleClick(event) {
+  const readerLink = event.target.closest('.skill-markdown a');
+  if (readerLink?.dataset.readerFile) { event.preventDefault(); readSkillFile(readerLink.dataset.readerFile, readerLink.dataset.readerHash); return; }
+  if (readerLink?.dataset.readerHash !== undefined) { event.preventDefault(); scrollSkillHeading(readerLink.dataset.readerHash); return; }
   const button = event.target.closest('button');
   if (!button) {
     if (!event.target.closest('.category-picker') && (state.categoryMenuOpen || state.sortMenuOpen)) {
@@ -1108,6 +1190,9 @@ async function handleClick(event) {
     return render();
   }
   if (!action) return;
+  if (action === 'read-skill') return openAsset(assetById(button.dataset.id));
+  if (action === 'read-skill-file') return readSkillFile(button.dataset.path);
+  if (action === 'manage-reader-skill') return openAsset(assetById(button.dataset.id), true);
   if (action === 'open-tab') {
     button.disabled = true;
     try {
@@ -1115,6 +1200,8 @@ async function handleClick(event) {
       const url = new URL(chrome.runtime.getURL('popup.html'));
       url.searchParams.set('mode', 'tab');
       if (state.tabId != null) url.searchParams.set('tab', state.tabId);
+      const selectedId = state.editor?.assetId ?? state.packageAssetId ?? readerAssetId;
+      if (selectedId && assetById(selectedId)?.type === 'skill') url.searchParams.set('asset', selectedId);
       await chrome.tabs.create({ url: url.href });
     } catch { showToast('无法打开新标签页，请重试。'); }
     finally { button.disabled = false; }
@@ -1360,6 +1447,7 @@ async function initialize() {
     state.readOnly = isReadOnlyDatabase(state.database);
     state.githubTokenConfigured = Boolean(await githubToken());
     state.activeTab = ['generic', 'skill', 'aigc', 'command'].includes(state.database.settings.lastNormalTab) ? state.database.settings.lastNormalTab : 'generic';
+    if (standaloneTab && assetById(readerAssetId)?.type === 'skill') state.activeTab = 'skill';
     try { state.agentBindings = await listBindings(); } catch { state.agentBindings = []; }
     try { await scanBoundDeliveries(); } catch { /* 未授权读取时按元数据展示。 */ }
     try {
