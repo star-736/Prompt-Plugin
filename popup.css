@@ -9,19 +9,26 @@
 
 * { box-sizing: border-box; }
 html {
-  height: 600px;
-  max-height: 600px;
-  max-width: 720px;
-  min-height: 600px;
-  overflow: hidden;
-  width: 720px;
+  min-height: 100%;
+  width: 100%;
 }
-body {
+html.toolbar-popup {
   height: 600px;
+  min-height: 0;
+  width: 720px;
+  overflow: hidden;
+}
+.toolbar-popup body { height: 100%; min-height: 0; overflow: auto; }
+.popup-resize { display: none; }
+.toolbar-popup .popup-resize { display: block; position: fixed; touch-action: none; user-select: none; z-index: 20; }
+.popup-resize-left { left: 0; top: 0; bottom: 22px; width: 6px; cursor: ew-resize; }
+.popup-resize-bottom { left: 22px; right: 0; bottom: 0; height: 6px; cursor: ns-resize; }
+.popup-resize-left:hover, .popup-resize-bottom:hover { background: #6385ae40; }
+.popup-resize-corner { left: 0; bottom: 0; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 0 5px 0 0; background: #e8eff8; color: #6385ae; cursor: nesw-resize; }
+body {
   margin: 0;
-  min-height: 600px;
-  overflow-x: hidden;
-  overflow-y: scroll;
+  min-height: 100vh;
+  overflow-wrap: anywhere;
   width: 100%;
 }
 button, input, textarea, select { font: inherit; }
@@ -114,3 +121,41 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .package-folder > summary::-webkit-details-marker,
 .package-folder > summary::marker { display: none; content: none; }
 .package-folder-icon { fill: none; flex: none; height: 14px; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; width: 14px; }
+
+/* Keep the same layout usable in both the toolbar popup and a resizable window. */
+.header-actions { display: flex; flex: none; gap: 4px; }
+.header-actions [hidden] { display: none; }
+.app-shell { min-height: 100vh; }
+.app-content { min-height: 0; }
+.app-header, .page-heading { gap: 12px; }
+.tabs, .subtabs, .library-tools, .editor-footer, .secondary-management,
+.asset-meta, .category-actions, .dialog-actions, .notice-banner { flex-wrap: wrap; }
+.library-tools .search-box { flex: 1 1 220px; }
+.library-tools > .button, .category-trigger { white-space: nowrap; }
+.setting-row > *, .category-row > *, .section-card, .package-tree,
+.package-tree-children, .asset-list > * { min-width: 0; }
+.category-menu { max-width: calc(100vw - 32px); min-width: min(190px, calc(100vw - 32px)); }
+.confirm-dialog { max-width: min(380px, calc(100vw - 24px)); max-height: calc(100vh - 24px); overflow: auto; }
+.toast { max-width: calc(100vw - 32px); width: max-content; }
+.gate { min-height: max(0px, calc(100vh - 110px)); }
+.empty-state:not(.compact-empty) { min-height: clamp(140px, calc(100vh - 250px), 500px); }
+html:not(.toolbar-popup) .field textarea { min-height: clamp(180px, 40vh, 600px); }
+html:not(.toolbar-popup) .field textarea.skill-editor { min-height: clamp(220px, 48vh, 720px); }
+
+@media (max-width: 560px) {
+  .app-shell { padding: 14px 12px 16px; }
+  .tabs { gap: 8px 14px; }
+  .library-tools .search-box { flex-basis: 100%; }
+  .setting-row, .category-row { grid-template-columns: minmax(0, 1fr); gap: 9px; }
+  .setting-actions, .category-actions { justify-content: flex-start; }
+  .editor-footer .status-line { flex-basis: 100%; text-align: left; }
+  .package-tree-children { padding-left: 10px; }
+}
+
+@media (max-width: 400px) {
+  .asset-row { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .asset-actions { flex-wrap: wrap; justify-content: flex-end; }
+  .inline-create, .page-heading { flex-wrap: wrap; }
+  .inline-create input { flex-basis: 100%; }
+  .gate-card { padding: 20px 16px; }
+}

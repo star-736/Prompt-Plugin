@@ -1,8 +1,8 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" class="toolbar-popup">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=720, height=600" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>FutureContext</title>
     <link rel="stylesheet" href="popup.css" />
   </head>
@@ -13,9 +13,14 @@
           <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M23.9 8.8A11.2 11.2 0 1 0 24 23.1"/><path d="M22.2 16h6.3"/></svg>
           <span>FutureContext</span>
         </button>
+        <div class="header-actions">
+        <button class="icon-button" type="button" data-action="open-tab" aria-label="在新标签页中打开" title="在新标签页中打开">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3h7v7M21 3l-9 9M10 5H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/></svg>
+        </button>
         <button class="icon-button" type="button" data-action="settings" aria-label="设置">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4Z"/><path d="m19.4 13.5 1.1.8-2 3.4-1.3-.5a7.4 7.4 0 0 1-1.8 1l-.2 1.4h-4l-.2-1.4a7.6 7.6 0 0 1-1.8-1l-1.3.5-2-3.4 1.1-.8a7.8 7.8 0 0 1 0-2.1l-1.1-.8 2-3.4 1.3.5a7.6 7.6 0 0 1 1.8-1l.2-1.4h4l.2 1.4a7.4 7.4 0 0 1 1.8 1l1.3-.5 2 3.4-1.1.8a7.8 7.8 0 0 1 0 2.1Z"/></svg>
         </button>
+        </div>
       </header>
       <section id="app" class="app-content" aria-live="polite"></section>
     </main>
@@ -34,6 +39,9 @@
       </form>
     </dialog>
 
+    <div class="popup-resize popup-resize-left" data-resize="width" aria-hidden="true" title="向左拖动加宽，向右拖动缩窄"></div>
+    <div class="popup-resize popup-resize-bottom" data-resize="height" aria-hidden="true" title="向下拖动增高，向上拖动缩短（最高 600）"></div>
+    <button id="popup-resize" class="popup-resize popup-resize-corner" data-resize="both" type="button" aria-label="调整弹窗大小，向左加宽，向下增高，支持方向键" title="向左加宽，向下增高（最大 800×600），支持方向键">◣</button>
     <script type="module" src="popup.js"></script>
   </body>
 </html>

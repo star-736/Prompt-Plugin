@@ -62,6 +62,56 @@ const confirmDialog = document.querySelector('#confirm-dialog');
 const confirmTitle = document.querySelector('#confirm-title');
 const confirmDescription = document.querySelector('#confirm-description');
 const confirmAction = document.querySelector('#confirm-action');
+const pageParams = new URLSearchParams(window.location.search);
+const standaloneTab = pageParams.get('mode') === 'tab';
+if (standaloneTab) {
+  document.documentElement.classList.remove('toolbar-popup');
+  document.querySelector('[data-action="open-tab"]').hidden = true;
+}
+
+// Toolbar popups are auto-sized by the browser, with an 800 × 600 ceiling.
+// Set the document size; keep its content scrolling inside that rectangle.
+if (!standaloneTab) {
+  const root = document.documentElement;
+  const grip = document.querySelector('#popup-resize');
+  const resize = (width, height) => {
+    if (!Number.isFinite(width) || !Number.isFinite(height)) return;
+    root.style.width = `${Math.round(Math.min(800, Math.max(320, width)))}px`;
+    root.style.height = `${Math.round(Math.min(600, Math.max(300, height)))}px`;
+  };
+  const remember = () => {
+    try { window.localStorage.setItem('futurecontext.popup-size', JSON.stringify({ width: parseFloat(root.style.width), height: parseFloat(root.style.height) })); } catch { /* Resizing works even if preferences cannot be saved. */ }
+  };
+  try {
+    const saved = JSON.parse(window.localStorage.getItem('futurecontext.popup-size'));
+    if (saved) resize(saved.width, saved.height);
+  } catch { /* Ignore missing or invalid preferences. */ }
+  let drag = null;
+  const finish = () => { if (drag) { drag = null; remember(); } };
+  document.querySelectorAll('[data-resize]').forEach((handle) => {
+    handle.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      drag = { x: event.screenX, y: event.screenY, width: root.getBoundingClientRect().width, height: root.getBoundingClientRect().height, axis: handle.dataset.resize };
+      handle.setPointerCapture(event.pointerId);
+    });
+    handle.addEventListener('pointermove', (event) => {
+      // The toolbar popup is anchored on the right: moving its left edge left widens it.
+      if (drag) resize(drag.width + (drag.axis === 'height' ? 0 : drag.x - event.screenX), drag.height + (drag.axis === 'width' ? 0 : event.screenY - drag.y));
+    });
+    handle.addEventListener('pointerup', finish);
+    handle.addEventListener('pointercancel', finish);
+    handle.addEventListener('lostpointercapture', finish);
+  });
+  grip.addEventListener('keydown', (event) => {
+    const delta = { ArrowLeft: [20, 0], ArrowRight: [-20, 0], ArrowUp: [0, -20], ArrowDown: [0, 20] }[event.key];
+    if (!delta) return;
+    event.preventDefault();
+    const bounds = root.getBoundingClientRect();
+    resize(bounds.width + delta[0], bounds.height + delta[1]);
+    remember();
+  });
+}
 
 const labels = { generic: '通用 Prompt', skill: 'Skill', aigc: 'AIGC Prompt', command: '终端指令' };
 const state = {
@@ -986,6 +1036,13 @@ async function resolveProposal(id, action) {
 }
 
 async function queryContentTab() {
+  const sourceTab = pageParams.get('tab');
+  if (standaloneTab && sourceTab && /^\d+$/.test(sourceTab)) {
+    try {
+      const tab = await chrome.tabs.get(Number(sourceTab));
+      if (tab?.id && !isRestrictedTabUrl(tab.url)) return tab;
+    } catch { /* 来源标签已关闭时查询当前网页。 */ }
+  }
   const [current] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (current?.id && !isRestrictedTabUrl(current.url)) return current;
   const [focused] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
@@ -1051,6 +1108,18 @@ async function handleClick(event) {
     return render();
   }
   if (!action) return;
+  if (action === 'open-tab') {
+    button.disabled = true;
+    try {
+      if (state.view === 'editor') await persistEditorDraft();
+      const url = new URL(chrome.runtime.getURL('popup.html'));
+      url.searchParams.set('mode', 'tab');
+      if (state.tabId != null) url.searchParams.set('tab', state.tabId);
+      await chrome.tabs.create({ url: url.href });
+    } catch { showToast('无法打开新标签页，请重试。'); }
+    finally { button.disabled = false; }
+    return;
+  }
   if (action === 'home') return state.view === 'editor' ? returnFromEditor() : (state.view = 'library', render());
   if (action === 'remove-github-token') {
     try { await saveGitHubToken(''); state.githubTokenConfigured = false; render(); showToast('GitHub Token 已移除，将使用匿名请求。'); }

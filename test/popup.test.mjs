@@ -168,6 +168,59 @@ function toastText() {
   return document.querySelector('#toast')?.textContent || '';
 }
 
+test('open new tab preserves the source tab without creating a window', async () => {
+  const createdTabs = [];
+  globalThis.chrome.tabs.create = async (info) => { createdTabs.push(info); return info; };
+  click('[data-action="open-tab"]');
+  await waitFor(() => createdTabs.length === 1);
+  const created = createdTabs[0];
+  const url = new URL(created.url);
+  assert.equal(url.pathname, '/popup.html');
+  assert.equal(url.searchParams.get('mode'), 'tab');
+  assert.ok(url.searchParams.get('tab'));
+  assert.equal(globalThis.chrome.windows.created.length, 0);
+});
+
+test('new tab creation failure allows retry', async () => {
+  globalThis.chrome.tabs.create = async () => { throw new Error('unavailable'); };
+  click('[data-action="open-tab"]');
+  await waitFor(() => toastText().includes('无法打开新标签页'));
+  assert.equal(document.querySelector('[data-action="open-tab"]').disabled, false);
+});
+
+test('popup resize clamps dimensions and remembers the size', () => {
+  const root = document.documentElement;
+  root.getBoundingClientRect = () => ({ width: 795, height: 595 });
+  const grip = document.querySelector('#popup-resize');
+  grip.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowLeft' }));
+  assert.equal(root.style.width, '800px');
+  grip.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowDown' }));
+  assert.equal(root.style.height, '600px');
+  root.getBoundingClientRect = () => ({ width: 325, height: 305 });
+  grip.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowRight' }));
+  assert.equal(root.style.width, '320px');
+  grip.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowUp' }));
+  assert.equal(root.style.height, '300px');
+  assert.deepEqual(JSON.parse(window.localStorage.getItem('futurecontext.popup-size')), { width: 325, height: 300 });
+});
+
+test('popup edges resize along their own axes and the corner grows left and down', () => {
+  const root = document.documentElement;
+  root.getBoundingClientRect = () => ({ width: 600, height: 450 });
+  for (const [axis, width, height] of [['width', '680px', '450px'], ['height', '600px', '500px'], ['both', '680px', '500px']]) {
+    const handle = document.querySelector(`[data-resize="${axis}"]`);
+    handle.setPointerCapture = () => {};
+    handle.dispatchEvent(new window.MouseEvent('pointerdown', { button: 0, screenX: 500, screenY: 400 }));
+    handle.dispatchEvent(new window.MouseEvent('pointermove', { screenX: 420, screenY: 450 }));
+    assert.equal(root.style.width, width);
+    assert.equal(root.style.height, height);
+    handle.dispatchEvent(new window.MouseEvent('pointerup'));
+    handle.dispatchEvent(new window.MouseEvent('pointermove', { screenX: 300, screenY: 550 }));
+    assert.equal(root.style.width, width);
+    assert.equal(root.style.height, height);
+  }
+});
+
 function holdRuntimeMessage(type) {
   let release = () => {};
   const gate = new Promise((resolve) => { release = resolve; });
