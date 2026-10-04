@@ -234,15 +234,25 @@ async function requestOrigins(origins) {
 }
 
 let applyingOwnWrite = false;
+let commitQueue = Promise.resolve();
 
-async function commit(mutator) {
+function commit(mutator) {
+  const operation = commitQueue.then(() => commitNow(mutator));
+  commitQueue = operation.catch(() => {});
+  return operation;
+}
+
+async function commitNow(mutator) {
   if (state.readOnly) {
     showToast('当前为只读，修改不会保存。');
     throw new Error(READ_ONLY_MESSAGE);
   }
   try {
     applyingOwnWrite = true;
-    if (!await applyDatabaseChange(mutator)) {
+    if (!await applyDatabaseChange(mutator, chrome.storage.local, { onSaved: (database) => {
+      if ((database.revision ?? 0) >= (state.database?.revision ?? 0)) state.database = database;
+      state.readOnly = isReadOnlyDatabase(state.database);
+    } })) {
       showToast('当前为只读，修改不会保存。');
       throw new Error(READ_ONLY_MESSAGE);
     }
@@ -252,7 +262,6 @@ async function commit(mutator) {
   } finally {
     applyingOwnWrite = false;
   }
-  state.database = await loadDatabase();
 }
 
 function renderReadOnlyBanner() {
@@ -501,6 +510,8 @@ function renderEditor() {
     ${titleField}
     ${categoryOptions(type, privacy, values.categoryId, state.editor.categoryCreating)}
     <div class="field"><label>${contentLabel}<textarea id="editor-content" class="${isSkill ? 'skill-editor' : isCommand ? 'command-editor' : ''}" ${isSkill ? '' : 'required'}>${escapeHtml(values.content)}</textarea></label>${contentHelp}</div>
+    <p class="form-help editor-error" id="editor-error" role="alert" hidden></p>
+    <p class="form-help" id="editor-progress" role="status" hidden></p>
     <div class="editor-footer">
       <button class="button button-ghost button-small copy-editor" type="button" data-action="copy-editor">复制</button>
       <span class="status-line">${existing ? `上次保存 ${new Date(existing.updatedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}` : ''}</span>
@@ -636,12 +647,8 @@ async function scanBoundDeliveries() {
   state.deliveryDisk = disk;
   if (!updates.length || state.readOnly) return;
   try {
-    applyingOwnWrite = true;
-    await applyDatabaseChange((database) => applyDiskDeliveries(database, updates));
-    state.database = await loadDatabase();
-  } catch { /* 扫描写回失败时仍按磁盘结果展示。 */ } finally {
-    applyingOwnWrite = false;
-  }
+    await commit((database) => applyDiskDeliveries(database, updates));
+  } catch { /* 扫描写回失败时仍按磁盘结果展示。 */ }
 }
 
 async function refreshBindingsAndDisk() {
@@ -732,6 +739,7 @@ function render() {
   else if (state.view === 'package-detail') app.innerHTML = renderPackageDetail();
   else if (state.view === 'reset-lock') app.innerHTML = renderReadOnlyBanner() + renderLockReset();
   else app.innerHTML = renderLibrary();
+  if (state.view === 'editor') updateEditorFeedback();
   const navigation = document.querySelector('.skill-navigation');
   if (navigation) navigation.scrollTop = navigationScroll;
   if (viewChanged) {
@@ -776,16 +784,49 @@ function openEditor(asset = null) {
   render();
 }
 
-async function persistEditorDraft() {
-  if (!state.editor) return;
+function updateEditorFeedback() {
+  const editor = state.editor;
+  const form = document.querySelector('#editor-form');
+  if (!editor || !form) return;
+  const error = form.querySelector('#editor-error');
+  error.textContent = editor.error ?? '';
+  error.hidden = !editor.error;
+  const progress = form.querySelector('#editor-progress');
+  progress.textContent = editor.slowSave ? '保存仍在进行，结果尚未确认。请保持窗口打开，完成后会更新状态。' : '正在保存，请稍候…';
+  const busy = Boolean(editor.saving || editor.closing);
+  progress.hidden = !busy;
+  form.setAttribute('aria-busy', String(busy));
+  for (const control of form.elements) control.disabled = busy;
+  form.querySelector('[type="submit"]').textContent = busy ? '正在保存…' : editor.error ? '重试保存' : '保存';
+}
+
+function persistEditorDraft() {
+  const editor = state.editor;
+  if (!editor || editor.saving || editor.closing) return;
   const values = editorValues();
-  state.editor.values = values;
-  if (!editorChanged(values)) return;
-  try {
-    await commit((db) => saveDraft(db, state.editor.reference, values));
-  } catch {
-    showToast('草稿保存失败，请重试。');
-  }
+  editor.values = values;
+  editor.pendingDraft = values;
+  if (editor.draftTask) return editor.draftTask;
+  editor.draftTask = (async () => {
+    while (editor.pendingDraft && state.editor === editor && !editor.saving && !editor.closing) {
+      const snapshot = editor.pendingDraft;
+      editor.pendingDraft = null;
+      try {
+        await commit((db) => {
+          if (state.editor !== editor || editor.saving || editor.closing) return null;
+          const baseline = editor.baseline;
+          const changed = snapshot.title !== baseline.title || snapshot.content !== baseline.content || snapshot.categoryId !== baseline.categoryId;
+          return changed ? saveDraft(db, editor.reference, snapshot) : discardDraft(db, editor.reference);
+        });
+        if (editor.errorKind === 'draft') { editor.error = ''; editor.errorKind = null; }
+      } catch (error) {
+        editor.error = `草稿未保存：${error.message || '请重试。'} 当前输入仍保留，请点击保存。`;
+        editor.errorKind = 'draft';
+      }
+      if (state.editor === editor) updateEditorFeedback();
+    }
+  })().finally(() => { editor.draftTask = null; });
+  return editor.draftTask;
 }
 
 async function beginEditorCategoryCreate() {
@@ -852,21 +893,39 @@ async function updatePackageCategory(categoryId) {
 }
 
 async function returnFromEditor() {
-  if (!state.editor || !editorChanged()) return finishEditorReturn(false);
+  if (!state.editor || !editorChanged()) return finishEditorReturn();
   showConfirm({
     title: '放弃未保存的更改',
     description: '放弃后，这次编辑草稿将被删除。',
     actionLabel: '放弃草稿',
     danger: true,
-    onConfirm: () => finishEditorReturn(true)
+    onConfirm: () => finishEditorReturn()
   });
 }
 
-async function finishEditorReturn(discard) {
-  if (discard && state.editor) await commit((db) => discardDraft(db, state.editor.reference));
-  state.editor = null;
-  state.view = 'library';
-  render();
+async function finishEditorReturn() {
+  const editor = state.editor;
+  if (editor?.saving || editor?.closing) return;
+  try {
+    if (editor) {
+      editor.values = editorValues();
+      editor.closing = true;
+      editor.pendingDraft = null;
+      updateEditorFeedback();
+      await editor.draftTask;
+      // Reverting to the baseline and immediately going back can cancel a
+      // queued draft deletion. Always clear any older draft before leaving.
+      await commit((db) => getDraft(db, editor.reference) ? discardDraft(db, editor.reference) : null);
+    }
+    state.editor = null;
+    state.view = 'library';
+    render();
+  } catch (error) {
+    if (editor) { editor.error = error.message || '无法放弃草稿，请重试。'; editor.errorKind = 'save'; }
+  } finally {
+    if (editor) editor.closing = false;
+    if (state.editor === editor) updateEditorFeedback();
+  }
 }
 
 function showConfirm({ title, description, actionLabel, danger = false, onConfirm }) {
@@ -890,22 +949,43 @@ async function copyText(text, { recordId = null } = {}) {
 }
 
 async function saveEditor() {
+  const editor = state.editor;
+  if (!editor || editor.saving || editor.closing) return;
   const values = editorValues();
-  const input = { id: state.editor.assetId, type: state.editor.type, privacy: state.editor.privacy, ...values };
+  editor.values = values;
+  editor.saving = true;
+  editor.error = '';
+  editor.errorKind = null;
+  editor.pendingDraft = null;
+  updateEditorFeedback();
+  const slowTimer = setTimeout(() => {
+    editor.slowSave = true;
+    if (state.editor === editor) updateEditorFeedback();
+  }, 10000);
+  const input = { id: editor.assetId, type: editor.type, privacy: editor.privacy, ...values };
   try {
+    await editor.draftTask;
     let queued = false;
     await commit((db) => {
       const result = saveAsset(db, input);
       queued = result.queued;
       return result.database;
     });
-    if (queued) void sendBackground({ type: 'schedule-ai' });
+    if (queued) void sendBackground({ type: 'schedule-ai' }).catch(() => {
+      showToast('内容已保存，后台整理暂未启动。');
+    });
     state.editor = null;
     state.view = 'library';
     render();
     showToast('已保存');
   } catch (error) {
-    showToast(error.message || '保存失败，请重试。');
+    editor.error = error.message || '保存失败，请重试。';
+    editor.errorKind = 'save';
+  } finally {
+    clearTimeout(slowTimer);
+    editor.saving = false;
+    editor.slowSave = false;
+    if (state.editor === editor) updateEditorFeedback();
   }
 }
 
@@ -1190,6 +1270,7 @@ async function handleClick(event) {
     return render();
   }
   if (!action) return;
+  if (state.editor?.saving || state.editor?.closing) return;
   if (action === 'read-skill') return openAsset(assetById(button.dataset.id));
   if (action === 'read-skill-file') return readSkillFile(button.dataset.path);
   if (action === 'manage-reader-skill') return openAsset(assetById(button.dataset.id), true);
@@ -1467,7 +1548,12 @@ async function initialize() {
       state.database = next;
       state.readOnly = isReadOnlyDatabase(next);
       if (applyingOwnWrite) return;
-      if (state.view === 'editor' && state.editor) state.editor.values = editorValues();
+      if (state.view === 'editor' && state.editor) {
+        state.editor.values = editorValues();
+        // External background writes must not replace focused form controls.
+        updateEditorFeedback();
+        return;
+      }
       render();
     });
     render();

@@ -5,6 +5,7 @@ import {
   createBackup,
   createCategory,
   createEmptyDatabase,
+  applyDatabaseChange,
   saveAsset,
   saveGithubSkillAsset,
   setPrivacyPassword,
@@ -502,6 +503,219 @@ test('editor save, category create, and back', async () => {
   await flush();
   document.querySelector('#editor-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
   await waitFor(() => /已保存/.test(toastText()) || document.querySelector('.asset-list'));
+});
+
+test('rapid editor input and immediate repeated submit save once without stale drafts', async () => {
+  click('[data-action="new-asset"]');
+  await waitFor(() => document.querySelector('#editor-form'));
+  let release;
+  const blocked = new Promise((resolve) => { release = resolve; });
+  const originalSet = stub.chrome.storage.local.set;
+  let writes = 0;
+  stub.chrome.storage.local.set = async (values) => {
+    if (++writes === 1) await blocked;
+    return originalSet(values);
+  };
+  document.querySelector('#editor-content').value = 'first draft';
+  document.querySelector('#editor-content').dispatchEvent(new window.Event('input', { bubbles: true }));
+  await waitFor(() => writes === 1);
+  for (let index = 0; index < 30; index += 1) {
+    document.querySelector('#editor-title-input').value = `Title ${index}`;
+    document.querySelector('#editor-content').value = `Body ${index}`;
+    document.querySelector('#editor-content').dispatchEvent(new window.Event('input', { bubbles: true }));
+  }
+  const form = document.querySelector('#editor-form');
+  const submit = () => form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  submit();
+  submit();
+  assert.equal(form.querySelector('[type="submit"]').disabled, true);
+  assert.match(document.querySelector('#editor-progress').textContent, /正在保存/);
+  release();
+  await waitFor(() => !document.querySelector('#editor-form'));
+  const database = stub.local['futurecontext.v1'];
+  const saved = database.assets.filter((asset) => asset.title === 'Title 29');
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].content, 'Body 29');
+  assert.equal(database.drafts['generic:normal:new'], undefined);
+  assert.equal(writes, 2);
+  click('[data-action="new-asset"]');
+  await waitFor(() => document.querySelector('#editor-form'));
+  assert.equal(document.querySelector('#editor-content').value, '');
+});
+
+test('draft writes coalesce and keep the latest input without replacing focused controls', async () => {
+  click('[data-action="new-asset"]');
+  await waitFor(() => document.querySelector('#editor-form'));
+  let release;
+  const blocked = new Promise((resolve) => { release = resolve; });
+  const originalSet = stub.chrome.storage.local.set;
+  let writes = 0;
+  stub.chrome.storage.local.set = async (values) => {
+    if (++writes === 1) await blocked;
+    return originalSet(values);
+  };
+  const content = document.querySelector('#editor-content');
+  content.value = 'first';
+  content.dispatchEvent(new window.Event('input', { bubbles: true }));
+  await waitFor(() => writes === 1);
+  for (let index = 0; index < 20; index += 1) {
+    content.value = `latest-${index}`;
+    content.dispatchEvent(new window.Event('input', { bubbles: true }));
+  }
+  release();
+  await waitFor(() => stub.local['futurecontext.v1'].drafts['generic:normal:new']?.content === 'latest-19');
+  assert.equal(writes, 2);
+  await applyDatabaseChange((db) => saveAsset(db, { type: 'generic', content: 'background asset' }, { id: 'bg' }).database);
+  assert.equal(document.querySelector('#editor-content'), content);
+  assert.equal(content.value, 'latest-19');
+});
+
+test('save failure stays visible, retains input, and allows one successful retry', async (t) => {
+  click('[data-action="new-asset"]');
+  await waitFor(() => document.querySelector('#editor-form'));
+  const content = document.querySelector('#editor-content');
+  content.value = 'keep this input';
+  document.querySelector('#editor-title-input').value = 'Retry me';
+  const originalSet = stub.chrome.storage.local.set;
+  stub.chrome.storage.local.set = async () => { throw new Error('storage unavailable'); };
+  document.querySelector('#editor-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  await waitFor(() => !document.querySelector('#editor-error').hidden);
+  assert.match(document.querySelector('#editor-error').textContent, /storage unavailable/);
+  assert.equal(content.value, 'keep this input');
+  assert.equal(document.querySelector('[type="submit"]').disabled, false);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  t.mock.timers.tick(3000);
+  assert.equal(document.querySelector('#editor-error').hidden, false);
+  t.mock.timers.reset();
+  stub.chrome.storage.local.set = originalSet;
+  document.querySelector('#editor-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  await waitFor(() => !document.querySelector('#editor-form'));
+  assert.equal(stub.local['futurecontext.v1'].assets.filter((asset) => asset.title === 'Retry me').length, 1);
+});
+
+test('draft failure is persistent and does not prevent a later formal save', async () => {
+  click('[data-action="new-asset"]');
+  await waitFor(() => document.querySelector('#editor-form'));
+  const originalSet = stub.chrome.storage.local.set;
+  stub.chrome.storage.local.set = async () => { throw new Error('draft unavailable'); };
+  const content = document.querySelector('#editor-content');
+  content.value = 'draft retained';
+  content.dispatchEvent(new window.Event('input', { bubbles: true }));
+  await waitFor(() => !document.querySelector('#editor-error').hidden);
+  assert.match(document.querySelector('#editor-error').textContent, /草稿未保存.*draft unavailable/);
+  assert.equal(content.value, 'draft retained');
+  stub.chrome.storage.local.set = originalSet;
+  document.querySelector('#editor-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  await waitFor(() => !document.querySelector('#editor-form'));
+  assert.ok(stub.local['futurecontext.v1'].assets.some((asset) => asset.content === 'draft retained'));
+});
+
+test('slow save reports an unconfirmed result and blocks retry until storage settles', async (t) => {
+  click('[data-action="new-asset"]');
+  await waitFor(() => document.querySelector('#editor-form'));
+  document.querySelector('#editor-content').value = 'slow save';
+  let release;
+  const blocked = new Promise((resolve) => { release = resolve; });
+  const originalSet = stub.chrome.storage.local.set;
+  let writes = 0;
+  stub.chrome.storage.local.set = async (values) => { writes += 1; await blocked; return originalSet(values); };
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const form = document.querySelector('#editor-form');
+  form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  t.mock.timers.tick(10001);
+  assert.match(document.querySelector('#editor-progress').textContent, /结果尚未确认/);
+  assert.equal(form.querySelector('[type="submit"]').disabled, true);
+  form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  t.mock.timers.reset();
+  release();
+  await waitFor(() => !document.querySelector('#editor-form'));
+  assert.equal(writes, 1);
+});
+
+test('discard waits for an active draft and prevents pending drafts from reappearing', async () => {
+  click('[data-action="new-asset"]');
+  await waitFor(() => document.querySelector('#editor-form'));
+  let release;
+  const blocked = new Promise((resolve) => { release = resolve; });
+  const originalSet = stub.chrome.storage.local.set;
+  let writes = 0;
+  stub.chrome.storage.local.set = async (values) => {
+    if (++writes === 1) await blocked;
+    return originalSet(values);
+  };
+  const content = document.querySelector('#editor-content');
+  content.value = 'discard first';
+  content.dispatchEvent(new window.Event('input', { bubbles: true }));
+  await waitFor(() => writes === 1);
+  content.value = 'discard pending';
+  content.dispatchEvent(new window.Event('input', { bubbles: true }));
+  click('[data-action="editor-back"]');
+  confirmOpenDialog();
+  release();
+  await waitFor(() => !document.querySelector('#editor-form'));
+  assert.equal(stub.local['futurecontext.v1'].drafts['generic:normal:new'], undefined);
+  assert.equal(writes, 2);
+  click('[data-action="new-asset"]');
+  await waitFor(() => document.querySelector('#editor-form'));
+  assert.equal(document.querySelector('#editor-content').value, '');
+});
+
+test('reverting to the baseline and immediately returning clears an older draft', async () => {
+  click('[data-action="open-asset"][data-id="g1"]');
+  await waitFor(() => document.querySelector('#editor-form'));
+  const content = document.querySelector('#editor-content');
+  const baseline = content.value;
+  content.value = 'temporary change';
+  content.dispatchEvent(new window.Event('input', { bubbles: true }));
+  await waitFor(() => stub.local['futurecontext.v1'].drafts['generic:normal:g1']?.content === 'temporary change');
+  content.value = baseline;
+  content.dispatchEvent(new window.Event('input', { bubbles: true }));
+  click('[data-action="editor-back"]');
+  await waitFor(() => !document.querySelector('#editor-form'));
+  assert.equal(document.querySelector('#confirm-dialog').open, false);
+  assert.equal(stub.local['futurecontext.v1'].drafts['generic:normal:g1'], undefined);
+  click('[data-action="open-asset"][data-id="g1"]');
+  await waitFor(() => document.querySelector('#editor-form'));
+  assert.equal(document.querySelector('#editor-content').value, baseline);
+});
+
+test('failed draft deletion retains the editor and permits saving its current input', async () => {
+  click('[data-action="open-asset"][data-id="g1"]');
+  await waitFor(() => document.querySelector('#editor-form'));
+  const content = document.querySelector('#editor-content');
+  content.value = 'keep input after failed deletion';
+  content.dispatchEvent(new window.Event('input', { bubbles: true }));
+  await waitFor(() => stub.local['futurecontext.v1'].drafts['generic:normal:g1']?.content === content.value);
+  const originalSet = stub.chrome.storage.local.set;
+  stub.chrome.storage.local.set = async () => { throw new Error('draft deletion failed'); };
+  click('[data-action="editor-back"]');
+  confirmOpenDialog();
+  await waitFor(() => !document.querySelector('#editor-error').hidden);
+  assert.match(document.querySelector('#editor-error').textContent, /draft deletion failed/);
+  assert.equal(content.value, 'keep input after failed deletion');
+  assert.equal(document.querySelector('#editor-form [type="submit"]').disabled, false);
+  stub.chrome.storage.local.set = originalSet;
+  document.querySelector('#editor-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  await waitFor(() => !document.querySelector('#editor-form'));
+  assert.equal(stub.local['futurecontext.v1'].assets.find((asset) => asset.id === 'g1').content, 'keep input after failed deletion');
+});
+
+test('successful storage acknowledgement is not mistaken for failure by a later read', async () => {
+  click('[data-action="new-asset"]');
+  await waitFor(() => document.querySelector('#editor-form'));
+  document.querySelector('#editor-content').value = 'already saved';
+  const originalGet = stub.chrome.storage.local.get;
+  const originalSet = stub.chrome.storage.local.set;
+  let saved = false;
+  stub.chrome.storage.local.get = async (...args) => {
+    if (saved) throw new Error('read after write failed');
+    return originalGet(...args);
+  };
+  stub.chrome.storage.local.set = async (values) => { await originalSet(values); saved = true; };
+  document.querySelector('#editor-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  await waitFor(() => !document.querySelector('#editor-form'));
+  assert.equal(toastText(), '已保存');
+  assert.equal(stub.local['futurecontext.v1'].assets.filter((asset) => asset.content === 'already saved').length, 1);
 });
 
 test('terminal command tab: content-first create, categorize, list, and copy', async () => {

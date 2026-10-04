@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { webcrypto } from 'node:crypto';
+import { loadFreshEntry } from './helpers.mjs';
 import {
   activeProvider,
   addStructureProposal,
@@ -8,6 +9,8 @@ import {
   applyAiCategoryGroups,
   applyDatabaseChange,
   APP_STORAGE_KEY,
+  DATABASE_WRITE_LOCK,
+  SAVE_BUSY_MESSAGE,
   assetsFor,
   captureSelection,
   categoriesFor,
@@ -702,6 +705,124 @@ test('recordAssetUse patch does not drop a concurrently saved asset', async () =
   const final = await loadDatabase(storage);
   assert.deepEqual(final.assets.map((asset) => asset.id).sort(), ['g1', 'g2']);
   assert.equal(final.assets.find((asset) => asset.id === 'g1').useCount, 1);
+});
+
+test('simultaneous patches keep every asset and recover after a failed write', async () => {
+  const storage = memoryStorage();
+  const options = { locks: null };
+  await assert.rejects(applyDatabaseChange(() => { throw new Error('write failed'); }, storage, options), /write failed/);
+  await Promise.all(Array.from({ length: 12 }, (_, index) => applyDatabaseChange(
+    (db) => saveAsset(db, { type: 'generic', content: `parallel-${index}` }, { id: `p${index}` }).database,
+    storage, options
+  )));
+  const final = await loadDatabase(storage);
+  assert.equal(final.assets.length, 12);
+  assert.equal(final.revision, 12);
+});
+
+test('simultaneous snapshot saves reject the stale writer instead of both succeeding', async () => {
+  const storage = memoryStorage();
+  const snapshot = createEmptyDatabase();
+  const results = await Promise.all(['first', 'second'].map((id) => saveDatabase(
+    saveAsset(snapshot, { type: 'generic', content: id }, { id }).database, storage, { locks: null }
+  )));
+  assert.deepEqual(results, [true, false]);
+  assert.equal((await loadDatabase(storage)).assets[0].id, 'first');
+});
+
+test('independent store modules share the browser lock across storage wrappers', async () => {
+  const otherStore = await loadFreshEntry('../store.js');
+  const storage = memoryStorage();
+  const otherStorage = { get: storage.get.bind(storage), set: storage.set.bind(storage) };
+  let tail = Promise.resolve();
+  let locked = false;
+  const locks = { request(name, options, run) {
+    assert.equal(name, DATABASE_WRITE_LOCK);
+    assert.equal(options.mode, 'exclusive');
+    const next = tail.then(async () => {
+      assert.equal(locked, false);
+      locked = true;
+      try { return await run(); } finally { locked = false; }
+    });
+    tail = next.catch(() => {});
+    return next;
+  } };
+  const mutate = (id) => async (db) => {
+    assert.equal(locked, true);
+    await Promise.resolve();
+    return saveAsset(db, { type: 'generic', content: id }, { id }).database;
+  };
+  await Promise.all([
+    applyDatabaseChange(mutate('popup'), storage, { locks }),
+    otherStore.applyDatabaseChange(mutate('background'), otherStorage, { locks })
+  ]);
+  const final = await loadDatabase(storage);
+  assert.deepEqual(final.assets.map((asset) => asset.id), ['popup', 'background']);
+  assert.equal(final.revision, 2);
+});
+
+test('a timed out lock request never reads or writes the database', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let reads = 0;
+  const storage = { async get() { reads += 1; }, async set() { assert.fail('cancelled write ran'); } };
+  const locks = { request(_name, { signal }) {
+    return new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+  } };
+  const result = applyDatabaseChange(() => assert.fail('cancelled mutator ran'), storage, { locks, lockTimeout: 10 });
+  const rejection = assert.rejects(result, { message: SAVE_BUSY_MESSAGE });
+  t.mock.timers.tick(11);
+  await rejection;
+  assert.equal(reads, 0);
+});
+
+test('an acquired lock is kept until a slow storage write finishes', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const storage = memoryStorage();
+  let release, started;
+  const writing = new Promise((resolve) => { started = resolve; });
+  const blocked = new Promise((resolve) => { release = resolve; });
+  const originalSet = storage.set;
+  storage.set = async (value) => { started(); await blocked; await originalSet(value); };
+  let signal, held = false;
+  const locks = { async request(_name, options, run) {
+    signal = options.signal;
+    held = true;
+    try { return await run(); } finally { held = false; }
+  } };
+  const result = applyDatabaseChange((db) => saveAsset(db, { type: 'generic', content: 'slow' }).database, storage, { locks, lockTimeout: 10 });
+  await writing;
+  t.mock.timers.tick(100);
+  assert.equal(held, true);
+  assert.equal(signal.aborted, false);
+  release();
+  assert.equal(await result, true);
+  assert.equal(held, false);
+  assert.equal((await loadDatabase(storage)).assets.length, 1);
+});
+
+test('acknowledged snapshots include the stored revision without a read after saving', async () => {
+  const storage = memoryStorage();
+  let acknowledged;
+  const options = { locks: null, onSaved: (db) => { acknowledged = db; } };
+  assert.equal(await applyDatabaseChange((db) => saveAsset(db, { type: 'generic', content: 'acknowledged' }, { id: 'ack' }).database, storage, options), true);
+  assert.deepEqual(acknowledged, storage.stored[APP_STORAGE_KEY]);
+  assert.equal(acknowledged.revision, 1);
+  assert.equal(await applyDatabaseChange(() => null, storage, options), true);
+  assert.equal(acknowledged.revision, 1);
+});
+
+test('extension storage refuses unlocked writes when Web Locks is unavailable', async () => {
+  const previousChrome = globalThis.chrome;
+  const storage = memoryStorage();
+  globalThis.chrome = { runtime: { id: 'test-extension' }, storage: { local: storage } };
+  try {
+    await assert.rejects(applyDatabaseChange((db) => db, storage, { locks: null }), /Web Locks/);
+    await assert.rejects(saveDatabase(createEmptyDatabase(), storage, { locks: null }), /Web Locks/);
+    assert.deepEqual(storage.stored, {});
+  } finally {
+    if (previousChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = previousChrome;
+  }
 });
 
 test('exportRequiresUnlock only when a lock and private items both exist', async () => {
