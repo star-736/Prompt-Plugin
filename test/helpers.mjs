@@ -19,6 +19,7 @@ export async function loadFreshEntry(relativePath) {
     });
   });
   await entry.evaluate();
+  return entry.namespace;
 }
 
 export function createMemoryIndexedDB() {

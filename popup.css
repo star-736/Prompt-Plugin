@@ -87,6 +87,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .pin-button.is-pinned{border-color:#cdd9e8;color:#5c7fa9}
 .notice-banner{background:#f3f6fa;border:1px solid #dde4ee;border-radius:9px;color:#4f5d70;display:flex;font-size:12px;gap:10px;justify-content:space-between;align-items:center;margin-bottom:12px;padding:9px 11px}
 .notice-banner.is-readonly{background:#fbf3f4;border-color:#ead4d8;color:#7c4a52}
+.editor-error { color: #9c3345; background: #fbf3f4; border: 1px solid #ead4d8; border-radius: 8px; padding: 9px 11px; }
 .site-hint{background:#eef3f9;border:1px solid #d6e1ef;border-radius:9px;color:#41658e;display:flex;font-size:12px;gap:10px;justify-content:space-between;align-items:center;flex-wrap:wrap;margin-bottom:12px;padding:9px 11px}
 .site-hint > span:first-child{flex:1;min-width:0;line-height:1.45}
 .site-hint-actions{display:flex;gap:6px;flex-shrink:0}
