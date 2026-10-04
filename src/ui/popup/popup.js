@@ -1,4 +1,6 @@
 import { createAssetEditor } from './asset-editor.js';
+import { createPromptUse } from './prompt-use.js';
+import { promptTemplateEnabled } from '../../core/prompt-template.js';
 import { EXTENSION_PATHS } from '../../platform/extension-paths.js';
 import {
   APP_STORAGE_KEY,
@@ -197,6 +199,41 @@ const editor = createAssetEditor({
   showToast,
   scheduleAi: () => sendBackground({ type: 'schedule-ai' })
 });
+
+function templateSessionProblem(session, database = state.database) {
+  if (session.asset.privacy === 'private' && !state.unlockedPrivate) return '请先解锁私密库。';
+  if (session.fromEditor) return '';
+  const latest = database.assets.find((asset) => asset.id === session.asset.id);
+  return !latest || latest.privacy !== session.asset.privacy || latest.content !== session.asset.content || !promptTemplateEnabled(latest)
+    ? '模板已修改、移动或删除，请返回资料库重新打开。' : '';
+}
+
+const promptUse = createPromptUse({
+  validateSession: templateSessionProblem,
+  onExit: (session) => { state.view = session.fromEditor ? 'editor' : 'library'; render(); },
+  onEdit: (session) => {
+    if (session.fromEditor) { state.view = 'editor'; render(); }
+    else { const asset = assetById(session.asset.id); if (asset && (asset.privacy !== 'private' || state.unlockedPrivate)) openEditor(asset); else { state.view = 'library'; render(); } }
+  },
+  onCopy: async (content, session) => {
+    const latest = await loadDatabase();
+    if (promptUse.current !== session || state.view !== 'prompt-use') return;
+    const problem = templateSessionProblem(session, latest);
+    if (problem) throw new Error(problem);
+    await navigator.clipboard.writeText(content);
+    showToast('已复制到剪贴板');
+    if (!session.fromEditor && !isReadOnlyDatabase(latest)) {
+      try { await commit((db) => recordAssetUse(db, session.asset.id)); }
+      catch { showToast('已复制，取用次数暂未保存。'); }
+    }
+  }
+});
+
+function openPromptUse(asset, options) {
+  if (!asset || (asset.privacy === 'private' && !state.unlockedPrivate)) return;
+  try { promptUse.open(asset, options); state.view = 'prompt-use'; render(); }
+  catch (error) { showToast(error.message); }
+}
 
 let toastTimer;
 let confirmCallback = null;
@@ -419,7 +456,7 @@ function renderAssetList() {
     <button class="asset-open" type="button" data-action="open-asset" data-id="${asset.id}">
       ${asset.type === 'aigc' ? `<span class="asset-aigc-content">${escapeHtml(asset.content)}</span>` : asset.type === 'command' ? `<span class="asset-command-content">${escapeHtml(asset.content)}</span><span class="asset-meta"><span class="category-badge">${escapeHtml(categoryName(asset.categoryId))}</span></span>` : `<span class="asset-title">${escapeHtml(displayTitle(asset))}</span><span class="asset-preview">${escapeHtml(previewFor(asset))}</span>${asset.privacy === 'normal' ? `<span class="asset-meta"><span class="category-badge">${escapeHtml(categoryName(asset.categoryId))}</span>${asset.type === 'skill' && deliverySummary(asset).length ? `<span class="delivery-badge">已投递 ${escapeHtml(deliverySummary(asset).join('、'))}</span>` : ''}</span>` : ''}`}
     </button>
-    <div class="asset-actions">${pinBtn(asset)}<button class="button button-ghost button-small copy-button" type="button" data-action="copy-asset" data-id="${asset.id}">复制</button><button class="button button-ghost button-small" type="button" data-action="delete-asset" data-id="${asset.id}">删除</button></div>
+    <div class="asset-actions">${pinBtn(asset)}<button class="button button-ghost button-small copy-button" type="button" data-action="copy-asset" data-id="${asset.id}">${promptTemplateEnabled(asset) ? '使用' : '复制'}</button><button class="button button-ghost button-small" type="button" data-action="delete-asset" data-id="${asset.id}">删除</button></div>
   </li>`).join('')}</ul>${githubCollect ? `<div class="library-secondary-action">${githubCollect}</div>` : ''}`;
 }
 
@@ -627,6 +664,7 @@ async function refreshBindingsAndDisk() {
     refreshAgentFolderSettings();
     return;
   }
+  if (state.view === 'prompt-use') { promptUse.feedback(); return; }
   if (state.view === 'editor' && editor.current) editor.capture();
   render();
 }
@@ -691,7 +729,9 @@ function render() {
   const navigationScroll = document.querySelector('.skill-navigation')?.scrollTop ?? 0;
   const viewChanged = state.view !== renderedView;
   renderedView = state.view;
-  if (state.view === 'editor') app.innerHTML = renderEditor();
+  if (state.view !== 'prompt-use') promptUse.clear();
+  if (state.view === 'prompt-use') app.innerHTML = `${renderReadOnlyBanner()}${pageHeading(`使用${labels[promptUse.current.asset.type]}`, 'prompt-back')}${promptUse.render()}`;
+  else if (state.view === 'editor') app.innerHTML = renderEditor();
   else if (state.view === 'categories') app.innerHTML = renderReadOnlyBanner() + renderCategories();
   else if (state.view === 'settings') app.innerHTML = renderSettings();
   else if (state.view === 'sites') app.innerHTML = renderSites();
@@ -709,6 +749,7 @@ function render() {
     if (state.librarySyncBusy) document.querySelectorAll('#library-sync-form input, #library-sync-form button').forEach((control) => { control.disabled = true; });
   }
   if (state.view === 'editor') editor.feedback();
+  if (state.view === 'prompt-use') promptUse.feedback();
   const navigation = document.querySelector('.skill-navigation');
   if (navigation) navigation.scrollTop = navigationScroll;
   if (viewChanged) {
@@ -935,6 +976,7 @@ async function importBackup(file) {
 
 async function openAsset(asset, manage = false) {
   if (!asset) return;
+  if (promptTemplateEnabled(asset) && !manage) return openPromptUse(asset);
   if (standaloneTab && asset.type === 'skill' && !manage) {
     reader.open(asset.id);
     state.view = 'library';
@@ -1075,6 +1117,7 @@ async function handleClick(event) {
   }
   if (!action) return;
   if (editor.current?.saving || editor.current?.closing) return;
+  if (action.startsWith('prompt-')) return promptUse.action(action);
   if (action === 'read-skill') return openAsset(assetById(button.dataset.id));
   if (action === 'read-skill-file') return reader.readFile(button.dataset.path);
   if (action === 'manage-reader-skill') return openAsset(assetById(button.dataset.id), true);
@@ -1129,10 +1172,16 @@ async function handleClick(event) {
   if (action === 'open-asset') return openAsset(assetById(button.dataset.id));
   if (action === 'copy-asset') {
     const asset = assetById(button.dataset.id);
+    if (promptTemplateEnabled(asset)) return openPromptUse(asset);
     return copyText(formatSkillInsert(asset?.content ?? '', asset?.type), { recordId: button.dataset.id });
   }
   if (action === 'copy-editor') {
-    const content = formatSkillInsert(editor.values().content, editor.current?.type);
+    const values = editor.values();
+    if (values.templateEnabled) {
+      editor.capture();
+      return openPromptUse({ id: editor.current.assetId, type: editor.current.type, privacy: editor.current.privacy, ...values }, { fromEditor: true });
+    }
+    const content = formatSkillInsert(values.content, editor.current?.type);
     return editor.current?.assetId ? copyText(content, { recordId: editor.current.assetId }) : copyText(content);
   }
   if (action === 'new-category-from-editor') return state.view === 'package-detail' ? beginPackageCategoryCreate() : editor.beginCategoryCreate();
@@ -1299,6 +1348,7 @@ async function handleSubmit(event) {
     return;
   }
   if (form.id === 'editor-form') return editor.save();
+  if (form.id === 'prompt-use-form') return promptUse.copy();
   if (form.id === 'private-gate-form') return handlePrivateGate(form);
   if (form.id === 'reset-lock-form') return resetLock(form);
   if (form.id === 'provider-form') {
@@ -1394,6 +1444,7 @@ async function initialize() {
       state.database = next;
       state.readOnly = isReadOnlyDatabase(next);
       if (applyingOwnWrite) return;
+      if (state.view === 'prompt-use') { promptUse.feedback(); return; }
       if (state.view === 'editor' && editor.current) {
         editor.capture();
         // External background writes must not replace focused form controls.
@@ -1411,6 +1462,7 @@ async function initialize() {
 
 document.addEventListener('click', (event) => { void handleClick(event); });
 app.addEventListener('input', (event) => {
+  if (event.target.closest('#prompt-use-form')) { promptUse.input(event.target); return; }
   const syncForm = event.target.closest('#library-sync-form');
   if (syncForm) { void persistSyncForm(syncForm); return; }
   if (event.target.id === 'search') {

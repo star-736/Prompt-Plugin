@@ -16,6 +16,7 @@ stub = createChromeStub({
     if (message.type === 'palette-settings') return { ok: true, result: { enabled: true, triggerEnabled: true } };
     if (message.type === 'palette-query') return { ok: true, result: assets.filter((item) => !message.query || item.title.includes(message.query) || item.preview.includes(message.query)) };
     if (message.type === 'palette-insert') return { ok: true, result: { content: message.id === 's1' ? '基于以下 skill 辅助我解决问题\nbody' : '写一封邮件' } };
+    if (message.type === 'palette-used') return { ok: true, result: { recorded: true } };
     return { ok: false, error: `unhandled ${message.type}` };
   }
 });
@@ -265,4 +266,131 @@ test('standalone insertion restores the saved contenteditable range before writi
   dispatchTrusted(window, new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
   await waitFor(() => ed.textContent === 'hello 写一封邮件');
   assert.equal(observed, 'world');
+});
+
+afterEach(() => { assets.splice(2); });
+
+async function templateTransport({ prepare, insert } = {}) {
+  const { parsePromptTemplate } = await import('../src/core/prompt-template.js');
+  const source = '一只 {{动物}}，位于 {{场景}}。{{动物}}';
+  assets.push({ id: 'template', type: 'generic', typeLabel: '通用', title: '模板', preview: source, templateEnabled: true });
+  const calls = [];
+  const original = stub.chrome.runtime.sendMessage;
+  stub.chrome.runtime.sendMessage = async (message) => {
+    calls.push(message);
+    if (message.type === 'palette-template') return prepare ? prepare(message) : { ok: true, result: { content: source, template: parsePromptTemplate(source) } };
+    if (message.type === 'palette-insert' && message.id === 'template') return insert ? insert(message) : { ok: true, result: { content: `一只 ${message.values.动物}，位于 ${message.values.场景}。${message.values.动物}` } };
+    return original(message);
+  };
+  return calls;
+}
+
+async function openTemplate() {
+  window.__futureContextPalette.openFromShortcut();
+  await waitFor(() => paletteShadow()?.querySelectorAll('.fc-item').length === 3);
+  dispatchTrusted(paletteShadow().querySelectorAll('.fc-item')[2], new window.MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+  await waitFor(() => paletteShadow().querySelector('.fc-template-form'));
+  return paletteShadow();
+}
+
+function fillWebTemplate(panel, index, value) {
+  const input = panel.querySelectorAll('.fc-variable')[index];
+  input.value = value;
+  dispatchTrusted(input, new window.Event('input', { bubbles: true, composed: true }));
+}
+
+test('web template fills inline with repeated fields, previews text and confirms before replacing original selection', async () => {
+  const calls = await templateTransport();
+  const target = field(); target.value = '前 原文 后'; target.setSelectionRange(2, 4);
+  const panel = await openTemplate();
+  assert.equal(calls.some((call) => call.type === 'palette-insert'), false);
+  dispatchTrusted(panel.querySelector('.fc-template-form'), new window.Event('submit', { bubbles: true, cancelable: true }));
+  assert.match(panel.querySelector('.fc-template-error').textContent, /动物/);
+  fillWebTemplate(panel, 0, '猫');
+  assert.equal(panel.querySelectorAll('.fc-variable')[2].value, '猫');
+  fillWebTemplate(panel, 1, '<海边>\n黄昏');
+  dispatchTrusted(panel.querySelectorAll('.fc-template-toolbar button')[1], new window.MouseEvent('click', { bubbles: true }));
+  assert.equal(panel.querySelector('.fc-template-result').textContent, '一只 猫，位于 <海边>\n黄昏。猫');
+  assert.equal(panel.querySelector('.fc-template-result 海边'), null);
+  dispatchTrusted(panel.querySelectorAll('.fc-template-toolbar button')[0], new window.MouseEvent('click', { bubbles: true }));
+  dispatchTrusted(panel.querySelector('.fc-template-form'), new window.Event('submit', { bubbles: true, cancelable: true }));
+  await waitFor(() => target.value === '前 一只 猫，位于 <海边>\n黄昏。猫 后');
+  assert.equal(calls.filter((call) => call.type === 'palette-insert').length, 1);
+  assert.equal(calls.filter((call) => call.type === 'palette-used').length, 1);
+  assert.equal(calls.find((call) => call.type === 'palette-insert').templateContent, '一只 {{动物}}，位于 {{场景}}。{{动物}}');
+});
+
+test('web template // retains the trigger until filled and inserts with the explicit keyboard shortcut', async () => {
+  await templateTransport();
+  const target = field(); target.value = '//'; target.setSelectionRange(2, 2);
+  dispatchTrusted(target, new window.Event('input', { bubbles: true }));
+  await waitFor(() => paletteShadow()?.querySelectorAll('.fc-item').length === 3);
+  dispatchTrusted(paletteShadow().querySelectorAll('.fc-item')[2], new window.MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+  await waitFor(() => paletteShadow().querySelector('.fc-template-form'));
+  const panel = paletteShadow();
+  assert.equal(target.value, '//');
+  fillWebTemplate(panel, 0, '狗'); fillWebTemplate(panel, 1, '雪山');
+  dispatchTrusted(panel.querySelector('.fc-variable'), new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, composed: true }));
+  assert.equal(target.value, '//');
+  dispatchTrusted(window, new window.KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true }));
+  await waitFor(() => target.value === '一只 狗，位于 雪山。狗');
+});
+
+test('web template cancellation and delayed responses cannot write after dismissal or permission revocation', async () => {
+  let resolvePrepare;
+  const { parsePromptTemplate } = await import('../src/core/prompt-template.js');
+  const source = '{{动物}}';
+  await templateTransport({ prepare: () => new Promise((resolve) => { resolvePrepare = resolve; }) });
+  const target = field(); target.value = '保留';
+  window.__futureContextPalette.openFromShortcut();
+  await waitFor(() => paletteShadow()?.querySelectorAll('.fc-item').length === 3);
+  dispatchTrusted(paletteShadow().querySelectorAll('.fc-item')[2], new window.MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+  await waitFor(() => resolvePrepare);
+  dispatchTrusted(window, new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  resolvePrepare({ ok: true, result: { content: source, template: parsePromptTemplate(source) } });
+  await flush(40);
+  assert.equal(paletteShadow().querySelector('.fc-template-form'), null);
+  assert.equal(target.value, '保留');
+  assets.splice(2);
+  let resolveInsert;
+  const calls = await templateTransport({ insert: () => new Promise((resolve) => { resolveInsert = resolve; }) });
+  target.focus();
+  const panel = await openTemplate();
+  fillWebTemplate(panel, 0, '猫'); fillWebTemplate(panel, 1, '海边');
+  dispatchTrusted(panel.querySelector('.fc-template-form'), new window.Event('submit', { bubbles: true, cancelable: true }));
+  await waitFor(() => resolveInsert);
+  stub.listeners.message.forEach((listener) => listener({ type: 'fc-settings', enabled: false }));
+  resolveInsert({ ok: true, result: { content: '不应插入' } });
+  await flush(60);
+  assert.equal(target.value, '保留');
+  assert.equal(calls.filter((call) => call.type === 'palette-insert').length, 1);
+  assert.equal(calls.some((call) => call.type === 'palette-used'), false);
+});
+
+test('web template reports submission errors without automatic retry and protects changed original input', async () => {
+  const calls = await templateTransport({ insert: async () => ({ ok: false, error: '模板已修改' }) });
+  const target = field(); target.value = '保留';
+  const panel = await openTemplate();
+  fillWebTemplate(panel, 0, '猫'); fillWebTemplate(panel, 1, '海边');
+  dispatchTrusted(panel.querySelector('.fc-template-form'), new window.Event('submit', { bubbles: true, cancelable: true }));
+  await flush(120);
+  assert.equal(calls.filter((call) => call.type === 'palette-insert').length, 1);
+  assert.equal(panel.querySelector('.fc-variable').value, '猫');
+  assert.equal(panel.querySelector('.fc-template-submit').disabled, false);
+  target.value = '新输入';
+  dispatchTrusted(panel.querySelector('.fc-template-form'), new window.Event('submit', { bubbles: true, cancelable: true }));
+  await flush(40);
+  assert.equal(target.value, '新输入');
+  assert.equal(calls.filter((call) => call.type === 'palette-insert').length, 1);
+});
+
+test('web template cancel button never submits or changes the input', async () => {
+  const calls = await templateTransport();
+  const target = field(); target.value = '保留';
+  const panel = await openTemplate();
+  fillWebTemplate(panel, 0, '猫');
+  dispatchTrusted(panel.querySelector('.fc-template-actions button'), new window.MouseEvent('click', { bubbles: true }));
+  assert.equal(target.value, '保留');
+  assert.equal(calls.some((call) => call.type === 'palette-insert'), false);
+  assert.equal(document.activeElement, target);
 });

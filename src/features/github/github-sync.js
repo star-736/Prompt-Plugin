@@ -2,6 +2,7 @@ import { applyDatabaseChange, loadDatabase, isReadOnlyDatabase, CATEGORY_SCOPES,
 import { getPackage, putPackage, deletePackage, assertPackageLimits } from '../../platform/package-store.js';
 import { cleanupPackageCandidates } from '../skills/package-lifecycle.js';
 import { restrictLocalStorage } from './github-auth.js';
+import { parsePromptTemplate } from '../../core/prompt-template.js';
 
 export const SYNC_CONFIG_KEY = 'futurecontext.github-sync';
 export const SYNC_STATUS_KEY = 'futurecontext.github-sync-status';
@@ -17,7 +18,7 @@ const string = (v, max = 10000000) => typeof v === 'string' && v.length <= max;
 const validId = (v) => string(v, 256) && /^[\w.-]+$/.test(v);
 const keys = (v, allowed) => Object.keys(v).every((key) => allowed.includes(key));
 const pick = (v, fields) => Object.fromEntries(fields.filter((key) => v[key] !== undefined).map((key) => [key, clone(v[key])]));
-const ASSET_FIELDS = ['id', 'type', 'privacy', 'title', 'content', 'categoryId', 'skillDescription', 'titleSource', 'categorySource', 'createdAt', 'updatedAt', 'pinned'];
+const ASSET_FIELDS = ['id', 'type', 'privacy', 'title', 'content', 'categoryId', 'skillDescription', 'titleSource', 'categorySource', 'createdAt', 'updatedAt', 'pinned', 'templateEnabled'];
 const CATEGORY_FIELDS = ['id', 'scope', 'name', 'createdBy'];
 const SOURCE_FIELDS = ['repository', 'directory', 'commit', 'ref', 'url', 'owner', 'repo', 'branch', 'defaultBranch'];
 const FILE_FIELDS = ['path', 'size', 'encoding', 'content', 'contentType'];
@@ -62,6 +63,11 @@ export function validateSyncDocument(input) {
       if (v.titleSource != null && !['manual', 'none', 'ai'].includes(v.titleSource)) invalid();
       if (v.categorySource != null && !['manual', 'none', 'ai', 'proposal'].includes(v.categorySource)) invalid();
       if (v.pinned !== undefined && typeof v.pinned !== 'boolean') invalid();
+      if (v.templateEnabled !== undefined && typeof v.templateEnabled !== 'boolean') invalid();
+      if (v.templateEnabled) {
+        if (!['generic', 'aigc'].includes(v.type)) invalid();
+        try { parsePromptTemplate(v.content); } catch { invalid(); }
+      }
       if (v.type === 'skill') { try { parseSkillMetadata(v.content); } catch { invalid(); } }
       if (v.package) {
         if (v.type !== 'skill' || !keys(v.package, ['files', 'source']) || !Array.isArray(v.package.files) || v.package.files.length > 2000 || !v.package.source || !keys(v.package.source, SOURCE_FIELDS)) invalid();

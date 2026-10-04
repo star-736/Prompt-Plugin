@@ -2,6 +2,7 @@ import { ASSET_TYPES, BACKUP_FORMAT, CAPTURE_LIMIT, CATEGORY_SCOPES, SORT_OPTION
 import { hasPrivacyLock } from './credentials.js';
 import { DEFAULT_PALETTE_TYPES } from '../content/in-place.js';
 import { deliveryRecord, diskDeliveryWrite, isAgentTarget, sameDeliveryRecord } from '../features/agents/agent-deliver.js';
+import { parsePromptTemplate, promptTemplateEnabled } from './prompt-template.js';
 
 export function parseSkillMetadata(content) {
   const source = String(content ?? '').replace(/^\uFEFF/, '');
@@ -37,7 +38,9 @@ export function validateAsset(input, database = null) {
   const metadata = type === 'skill' ? parseSkillMetadata(content) : null;
   const categoryId = type === 'aigc' || privacy === 'private' ? null : input.categoryId || null;
   if (categoryId && !database?.categories?.some((category) => category.id === categoryId && category.scope === scope)) throw new Error('找不到该分类。');
-  return { type, privacy, title: type === 'skill' ? metadata.name : normalizedName(input.title), content, categoryId, skillDescription: metadata?.description ?? null };
+  const templateEnabled = promptTemplateEnabled(input);
+  if (templateEnabled) parsePromptTemplate(content);
+  return { type, privacy, title: type === 'skill' ? metadata.name : normalizedName(input.title), content, categoryId, skillDescription: metadata?.description ?? null, ...(input.templateEnabled !== undefined ? { templateEnabled } : {}) };
 }
 function titleSource(existing, asset) { if (asset.type !== 'generic') return null; if (!existing) return asset.title ? 'manual' : 'none'; return asset.title === existing.title ? (existing.titleSource ?? (asset.title ? 'manual' : 'none')) : (asset.title ? 'manual' : 'none'); }
 function categorySource(existing, asset) { if (!['generic', 'skill', 'command'].includes(asset.type)) return null; if (!existing) return asset.categoryId ? 'manual' : 'none'; return asset.categoryId === existing.categoryId ? (existing.categorySource ?? (asset.categoryId ? 'manual' : 'none')) : (asset.categoryId ? 'manual' : 'none'); }
@@ -56,6 +59,8 @@ export function saveAsset(database, input, { now = Date.now(), id = newId() } = 
   if (existing?.privacy === 'normal' && validated.privacy === 'private') next.syncWithdrawals = [...new Set([...(next.syncWithdrawals ?? []), existing.id])];
   const legacyAigc = existing?.type === 'aigc' ? { title: existing.title ?? '', categoryId: existing.categoryId ?? null } : null;
   const asset = { ...(existing ?? { id, createdAt: now, useCount: 0, lastUsedAt: null, pinned: false }), ...validated, ...(legacyAigc ?? {}), ...(existing?.privacy === 'private' && validated.privacy === 'normal' ? { id: newId() } : {}), titleSource: titleSource(existing, validated), categorySource: categorySource(existing, validated), updatedAt: now };
+  if (promptTemplateEnabled(asset)) parsePromptTemplate(asset.content);
+  else delete asset.templateEnabled;
   if (existingIndex >= 0) next.assets[existingIndex] = asset; else next.assets.push(asset);
   enqueueIfEligible(next, existing, asset, now); delete next.drafts[draftKey({ type: asset.type, privacy: asset.privacy, id: input.id || null })];
   return { database: next, asset, queued: next.ai.queue.some((entry) => entry.assetId === asset.id) };
@@ -240,7 +245,7 @@ export function saveDraft(database, reference, values, now = Date.now()) { const
 export function discardDraft(database, reference) { const next = normalizeDatabase(clone(database)); delete next.drafts[draftKey(reference)]; return next; }
 
 function categoryNameMap(database) { return new Map(database.categories.map((category) => [category.id, category.name])); }
-function assetFingerprint(asset, names) { return JSON.stringify([asset.type, asset.privacy, asset.title, asset.content, names.get(asset.categoryId) ?? '', asset.skillPackage?.source?.repository ?? '']); }
+function assetFingerprint(asset, names) { return JSON.stringify([asset.type, asset.privacy, asset.title, asset.content, names.get(asset.categoryId) ?? '', asset.skillPackage?.source?.repository ?? '', promptTemplateEnabled(asset)]); }
 export function createBackup(database, now = Date.now(), packages = []) { return { format: BACKUP_FORMAT, version: 2, exportedAt: now, categories: clone(database.categories), assets: clone(database.assets), packages: clone(packages) }; }
 export function parseBackup(value) { const backup = typeof value === 'string' ? JSON.parse(value) : value; if (!backup || backup.format !== BACKUP_FORMAT || ![1, 2].includes(backup.version) || !Array.isArray(backup.assets) || !Array.isArray(backup.categories)) throw new Error('这不是 FutureContext 的有效备份文件。'); return { ...backup, packages: Array.isArray(backup.packages) ? backup.packages : [] }; }
 export function mergeBackup(database, backupValue, { now = Date.now(), idFactory = newId } = {}) {

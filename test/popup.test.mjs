@@ -1260,3 +1260,150 @@ test('confirmed backup import stays successful when any later storage read fails
   click('[data-action="home"]');
   assert.match(document.querySelector('.asset-list').textContent, /confirmed import input/);
 });
+
+async function seedTemplate(type = 'generic', privacy = 'normal') {
+  await applyDatabaseChange((db) => saveAsset(db, { type, privacy, content: '一只 {{动物}}，位于 {{场景}}。再次看到 {{动物}}。', templateEnabled: true }, { id: 'template-test' }));
+  if (type === 'aigc') {
+    click('[data-tab="aigc"]');
+    await flush(30);
+    if (privacy === 'private') {
+      click('[data-privacy="private"]');
+      document.querySelector('#gate-password').value = '123456';
+      document.querySelector('#private-gate-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+      await waitFor(() => document.querySelector('[data-action="open-asset"][data-id="template-test"]'));
+    }
+  }
+  await waitFor(() => document.querySelector('[data-action="open-asset"][data-id="template-test"]'));
+}
+
+function fillTemplate(index, value) {
+  const field = document.querySelector(`[data-variable="${index}"]`);
+  field.value = value;
+  field.dispatchEvent(new window.Event('input', { bubbles: true }));
+  return field;
+}
+
+function submitTemplateUse() {
+  document.querySelector('#prompt-use-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+}
+
+test('template use fills inline, mirrors repeated names, previews literal text and copies without modifying saved content', async () => {
+  await seedTemplate();
+  click('[data-action="copy-asset"][data-id="template-test"]');
+  assert.ok(document.querySelector('#prompt-use-form'));
+  submitTemplateUse();
+  await waitFor(() => document.querySelector('#prompt-use-error').textContent.includes('请填写'));
+  fillTemplate(0, '猫');
+  assert.equal(document.querySelectorAll('[data-variable="0"]')[1].value, '猫');
+  fillTemplate(1, '<script>海边</script>\n黄昏');
+  click('[data-action="prompt-result"]');
+  assert.equal(document.querySelector('#prompt-fill').hidden, true);
+  assert.equal(document.querySelector('#prompt-result').textContent, '一只 猫，位于 <script>海边</script>\n黄昏。再次看到 猫。');
+  assert.equal(document.querySelector('#prompt-result script'), null);
+  submitTemplateUse();
+  await waitFor(() => stub.local['futurecontext.v1'].assets.find((asset) => asset.id === 'template-test').useCount === 1);
+  assert.equal(await window.navigator.clipboard.readText(), document.querySelector('#prompt-result').textContent);
+  assert.equal(stub.local['futurecontext.v1'].assets.find((asset) => asset.id === 'template-test').content.includes('{{场景}}'), true);
+  assert.doesNotMatch(JSON.stringify(stub.local), /<script>海边/);
+  click('[data-action="prompt-fill"]');
+  click('[data-action="prompt-clear"]');
+  assert.equal(document.querySelector('[data-variable="0"]').value, '');
+  click('[data-action="prompt-back"]');
+  click('[data-action="open-asset"][data-id="template-test"]');
+  assert.equal(document.querySelector('[data-variable="0"]').value, '');
+  click('[data-action="prompt-edit"]');
+  assert.equal(document.querySelector('#editor-template-enabled').checked, true);
+});
+
+test('template usage preserves focus across storage updates and blocks stale or deleted templates', async () => {
+  await seedTemplate();
+  click('[data-action="open-asset"][data-id="template-test"]');
+  const field = fillTemplate(0, '狗');
+  fillTemplate(1, '雪山');
+  field.focus();
+  field.setSelectionRange(1, 1);
+  await applyDatabaseChange((db) => { const next = structuredClone(db); next.settings.extra = true; return next; });
+  assert.equal(document.activeElement, field);
+  assert.equal(field.selectionStart, 1);
+  await applyDatabaseChange((db) => saveAsset(db, { ...db.assets.find((asset) => asset.id === 'template-test'), content: '{{新主题}}' }));
+  assert.equal(document.activeElement, field);
+  assert.match(document.querySelector('#prompt-use-error').textContent, /模板已修改/);
+  submitTemplateUse();
+  await flush(30);
+  assert.equal(await window.navigator.clipboard.readText(), '');
+  click('[data-action="prompt-back"]');
+  click('[data-action="open-asset"][data-id="template-test"]');
+  await applyDatabaseChange((db) => ({ ...db, assets: db.assets.filter((asset) => asset.id !== 'template-test') }));
+  click('[data-action="prompt-edit"]');
+  assert.ok(document.querySelector('.asset-list'));
+});
+
+test('template mode survives drafts, trial usage, category changes, save and disable', async () => {
+  click('[data-action="new-asset"]');
+  document.querySelector('#editor-content').value = '请总结 {{内容}}';
+  const mode = document.querySelector('#editor-template-enabled');
+  mode.checked = true;
+  mode.dispatchEvent(new window.Event('change', { bubbles: true }));
+  await waitFor(() => stub.local['futurecontext.v1'].drafts['generic:normal:new']?.templateEnabled);
+  assert.match(document.querySelector('#editor-template-summary').textContent, /内容/);
+  click('[data-action="copy-editor"]');
+  fillTemplate(0, '临时填写');
+  submitTemplateUse();
+  await waitFor(async () => await window.navigator.clipboard.readText() === '请总结 临时填写');
+  click('[data-action="prompt-edit"]');
+  assert.equal(document.querySelector('#editor-content').value, '请总结 {{内容}}');
+  assert.equal(document.querySelector('#editor-template-enabled').checked, true);
+  click('[data-action="new-category-from-editor"]');
+  await waitFor(() => document.querySelector('#editor-new-category'));
+  document.querySelector('#editor-new-category').value = '模板分类';
+  click('[data-action="create-category-from-editor"]');
+  await waitFor(() => !document.querySelector('#editor-new-category'));
+  document.querySelector('#editor-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  await waitFor(() => !document.querySelector('#editor-form'));
+  const saved = stub.local['futurecontext.v1'].assets.find((asset) => asset.content === '请总结 {{内容}}');
+  assert.equal(saved.templateEnabled, true);
+  assert.equal(stub.local['futurecontext.v1'].drafts['generic:normal:new'], undefined);
+  click(`[data-action="open-asset"][data-id="${saved.id}"]`);
+  click('[data-action="prompt-edit"]');
+  document.querySelector('#editor-template-enabled').checked = false;
+  document.querySelector('#editor-template-enabled').dispatchEvent(new window.Event('change', { bubbles: true }));
+  document.querySelector('#editor-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  await waitFor(() => !document.querySelector('#editor-form'));
+  click(`[data-action="copy-asset"][data-id="${saved.id}"]`);
+  await waitFor(async () => await window.navigator.clipboard.readText() === '请总结 {{内容}}');
+});
+
+test('template editor reports invalid placeholders and usage retains values after clipboard failure', async () => {
+  click('[data-action="new-asset"]');
+  document.querySelector('#editor-content').value = '{{未闭合';
+  document.querySelector('#editor-template-enabled').checked = true;
+  document.querySelector('#editor-content').dispatchEvent(new window.Event('input', { bubbles: true }));
+  await waitFor(() => document.querySelector('#editor-template-summary').textContent.includes('格式不完整'));
+  click('[data-action="copy-editor"]');
+  assert.ok(document.querySelector('#editor-form'));
+  document.querySelector('#editor-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  await waitFor(() => document.querySelector('#editor-error').textContent.includes('占位符'));
+  click('[data-action="editor-back"]');
+  confirmOpenDialog();
+  await waitFor(() => !document.querySelector('#editor-form'));
+  await seedTemplate();
+  click('[data-action="open-asset"][data-id="template-test"]');
+  fillTemplate(0, '猫'); fillTemplate(1, '海边');
+  window.navigator.clipboard.writeText = async () => { throw new Error('clipboard denied'); };
+  submitTemplateUse();
+  await waitFor(() => document.querySelector('#prompt-use-error').textContent.includes('clipboard denied'));
+  assert.equal(document.querySelector('[data-variable="0"]').value, '猫');
+  assert.equal(stub.local['futurecontext.v1'].assets.find((asset) => asset.id === 'template-test').useCount, 0);
+});
+
+test('private AIGC templates use the same flow only after unlocking', async () => {
+  await seedTemplate('aigc', 'private');
+  click('[data-action="open-asset"][data-id="template-test"]');
+  fillTemplate(0, '猫'); fillTemplate(1, '私密场景');
+  submitTemplateUse();
+  await waitFor(async () => (await window.navigator.clipboard.readText()).includes('私密场景'));
+  assert.doesNotMatch(JSON.stringify(stub.local), /私密场景/);
+  click('[data-action="prompt-edit"]');
+  assert.equal(document.querySelector('#editor-template-enabled').checked, true);
+  assert.ok(document.querySelector('[data-action="move-asset"]'));
+});

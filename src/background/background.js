@@ -2,13 +2,13 @@ import { configureSync, removeSyncConfiguration, syncSettings, runLibrarySync, s
 import { restrictLocalStorage } from '../features/github/github-auth.js';
 import { AI_ALARM, aiSessionStatus, clearAiSession, deleteProvider, processAiQueue, queueExisting, saveProvider, scheduleAi, testProvider, unlockAi } from './ai-worker.js';
 import { collectFromActiveTab, updateGitHubSkill } from './github-collection.js';
-import { CAPTURE_MENU_ID, captureFromMenu, ensureContextMenu, openPaletteInActiveTab, paletteInsert, paletteSettings, queryPalette, readNotice, syncContentScripts } from './palette-controller.js';
+import { CAPTURE_MENU_ID, captureFromMenu, ensureContextMenu, openPaletteInActiveTab, paletteInsert, preparePaletteTemplate, recordPaletteUse, paletteSettings, queryPalette, readNotice, syncContentScripts } from './palette-controller.js';
 import { recoverUnreferencedPackages } from '../features/skills/package-lifecycle.js';
 import { readSyncSettingsDraft, writeSyncSettingsDraft, discardSyncSettingsDraft, submitSyncSettings } from './sync-settings-draft.js';
 export { NOTICE_KEY } from './palette-controller.js';
 export { githubPageContext } from './github-collection.js';
 
-const CONTENT_SCRIPT_MESSAGES = Object.freeze(['palette-settings', 'palette-query', 'palette-insert']);
+const CONTENT_SCRIPT_MESSAGES = Object.freeze(['palette-settings', 'palette-query', 'palette-insert', 'palette-template', 'palette-used']);
 export const PACKAGE_RECOVERY_ALARM = 'futurecontext.package-recovery';
 
 function recoverPackages() { return recoverUnreferencedPackages().catch(() => {}); }
@@ -53,7 +53,9 @@ export async function handleRuntimeMessage(message, sender = {}) {
   if (message.type === 'update-github-skill') return updateGitHubSkill(message.assetId);
   if (message.type === 'palette-settings') return paletteSettings(sender);
   if (message.type === 'palette-query') return queryPalette(message.query ?? '', sender);
-  if (message.type === 'palette-insert') return paletteInsert(message.id, sender);
+  if (message.type === 'palette-template') return preparePaletteTemplate(message.id, sender);
+  if (message.type === 'palette-insert') return paletteInsert(message.id, sender, { values: message.values, templateContent: message.templateContent, deferUsage: message.deferUsage === true });
+  if (message.type === 'palette-used') { await recordPaletteUse(message.id, sender); return { recorded: true }; }
   if (message.type === 'sync-sites') return syncContentScripts();
   if (message.type === 'read-notice') return readNotice();
   throw new Error('未知的 FutureContext 后台请求。');

@@ -21,6 +21,8 @@
   let openedAt = 0;
   let dismissTimer = 0;
   let queryGen = 0;
+  let templateSession = null;
+  let preparingTemplate = false;
   const INLINE_DISMISS_MS = 80;
 
   const isField = (el) => el.matches('textarea, input');
@@ -46,7 +48,12 @@
         const res = await chrome.runtime.sendMessage({ type, ...payload });
         if (!res?.ok) throw new Error(res?.error || '后台失败');
         return res.result;
-      } catch {
+      } catch (error) {
+        // Submission errors are not retried: the write may already have begun.
+        if (['palette-insert', 'palette-template', 'palette-used'].includes(type)) {
+          if (!silent) showToast(error.message || '取用失败，请重试。');
+          return null;
+        }
         if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 80));
       }
     }
@@ -62,6 +69,7 @@
     shadow = host.attachShadow({ mode: 'closed' });
     const style = document.createElement('style');
     style.textContent = `.fc-palette{pointer-events:auto;background:#fff;border:1px solid #dfe5ed;border-radius:10px;box-shadow:0 12px 30px #26384a18;font-family:Inter,"Microsoft YaHei UI",system-ui,sans-serif;overflow:hidden;position:fixed}.fc-search{width:100%;border:0;border-bottom:1px solid #edf0f4;box-sizing:border-box;font-size:13px;outline:0;padding:10px 12px}.fc-list{max-height:320px;overflow:auto;padding:4px}.fc-item{align-items:flex-start;background:transparent;border:0;border-radius:6px;color:#273141;cursor:pointer;display:grid;gap:2px;padding:8px 10px;text-align:left;width:100%}.fc-item.is-active{background:#edf3fa;color:#41668f}.fc-type{color:#8b96a5;font-size:11px}.fc-title{font-size:13px;font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.fc-preview{color:#8994a2;font-size:11px;line-height:1.4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.fc-pin{color:#5c7fa9;font-size:10px;font-weight:500;margin-left:6px}.fc-item-wrap{position:relative}.fc-empty{color:#8b96a5;font-size:12px;line-height:1.5;padding:14px 12px}.fc-empty-hint{color:#9aa4b2;font-size:11px;margin-top:4px}`;
+    style.textContent += `.fc-template-form{color:#273141;font-size:13px;padding:12px}.fc-template-toolbar,.fc-template-actions{display:flex;align-items:center;justify-content:space-between;gap:8px}.fc-template-toolbar{margin-bottom:10px}.fc-template-document{white-space:pre-wrap;overflow-wrap:anywhere;line-height:2.3;max-height:260px;overflow:auto;padding:8px 0}.fc-template-document[hidden]{display:none}.fc-variable{vertical-align:middle;box-sizing:border-box;width:18ch;max-width:100%;min-height:32px;margin:3px;padding:5px 7px;border:1px solid #bdcde0;border-radius:5px;background:#f4f7fb;color:#273141;font:inherit;line-height:1.5;resize:vertical}.fc-variable:focus{outline:2px solid #92b2d8}.fc-template-result{font:inherit;white-space:pre-wrap;margin:0}.fc-template-button{border:1px solid #dfe5ed;border-radius:5px;background:#fff;color:#41668f;font:inherit;padding:6px 9px;cursor:pointer}.fc-template-button[aria-pressed=true],.fc-template-submit{background:#edf3fa}.fc-template-button:disabled{opacity:.6;cursor:default}.fc-template-progress,.fc-template-hint{color:#8994a2;font-size:11px}.fc-template-error{color:#a23b3b;font-size:12px}`;
     shadow.appendChild(style);
     panel = document.createElement('div');
     panel.className = 'fc-palette';
@@ -219,7 +227,7 @@
   function positionPanel() {
     if (!target || !panel) return;
     const rect = target.getBoundingClientRect();
-    const width = Math.min(560, Math.max(360, rect.width));
+    const width = Math.max(200, Math.min(window.innerWidth - 16, 560, Math.max(360, rect.width)));
     panel.style.width = `${width}px`;
     panel.style.left = `${Math.min(window.innerWidth - width - 8, Math.max(8, rect.left))}px`;
     panel.hidden = false;
@@ -227,6 +235,9 @@
     const h = panel.offsetHeight || 240;
     let top = rect.top - h - 8;
     if (top < 8) top = rect.bottom + 8;
+    top = Math.max(8, Math.min(top, window.innerHeight - h - 8));
+    panel.style.maxHeight = `${Math.max(160, window.innerHeight - 16)}px`;
+    panel.style.overflowY = 'auto';
     panel.style.top = `${top}px`;
     panel.style.visibility = '';
   }
@@ -252,6 +263,7 @@
       btn.dataset.i = String(i);
       const type = el('span', 'fc-type', item.typeLabel ?? '');
       if (item.pinned) type.appendChild(el('span', 'fc-pin', '置顶'));
+      if (item.templateEnabled) type.appendChild(el('span', 'fc-pin', '占位符'));
       btn.append(type, el('span', 'fc-title', item.title ?? ''), el('span', 'fc-preview', item.preview ?? ''));
       btn.addEventListener('mousedown', (e) => {
         if (!e.isTrusted) return;
@@ -317,6 +329,8 @@
     anchorOffset = 0;
     openedAt = 0;
     queryGen += 1;
+    templateSession = null;
+    preparingTemplate = false;
     cancelDismiss();
     savedRange = null;
     savedInputRange = null;
@@ -378,7 +392,7 @@
   }
 
   function scheduleInlineCheck() {
-    if (!open || mode !== 'inline') return;
+    if (!open || mode !== 'inline' || templateSession || preparingTemplate) return;
     const q = readInlineQuery();
     if (q === null) return;
     if (q === false) {
@@ -426,6 +440,7 @@
     if (!e.isTrusted || inHost(e)) return;
     const el = editableFrom(e.target) || editableFrom(document.activeElement);
     if (open) {
+      if (templateSession) { close(); return; }
       if (mode === 'inline') scheduleInlineCheck();
       return;
     }
@@ -464,13 +479,13 @@
   function onOutside(e) {
     if (!open || inHost(e)) return;
     if (!e.isTrusted) return;
-    if (inTarget(e)) return;
+    if (inTarget(e) && !templateSession) return;
     if (mode === 'inline' && Date.now() - openedAt < INLINE_DISMISS_MS) return;
     close();
   }
 
   function onFocusOut(e) {
-    if (!open || mode !== 'standalone' || !target) return;
+    if (!open || mode !== 'standalone' || !target || templateSession || preparingTemplate) return;
     if (inHost(e)) return;
     const next = e.relatedTarget;
     if (next && (host === next || host?.contains(next) || (queryInput && (next === queryInput || queryInput.contains(next))))) return;
@@ -484,6 +499,12 @@
   function onKey(e) {
     if (!open || !e.isTrusted) return;
     if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); return close(); }
+    if (templateSession) {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); e.stopImmediatePropagation(); void submitTemplate(); }
+      else if (e.key === 'Enter' && inHost(e)) e.stopImmediatePropagation();
+      return;
+    }
+    if (preparingTemplate) return;
     if (e.key === 'ArrowDown') { e.preventDefault(); e.stopImmediatePropagation(); selected = items.length ? (selected + 1) % items.length : 0; renderList(); return; }
     if (e.key === 'ArrowUp') { e.preventDefault(); e.stopImmediatePropagation(); selected = items.length ? (selected - 1 + items.length) % items.length : 0; renderList(); return; }
     if ((e.key === 'Enter' && !e.shiftKey) || e.key === 'Tab') {
@@ -516,27 +537,154 @@
     return el.innerText !== before;
   }
 
+  function insertionSnapshot(item) {
+    const el = target;
+    return { id: item.id, el, mode, start: anchorOffset, end: caretCharOffset(el), text: isField(el) ? el.value : el.textContent, selection: { inputRange: savedInputRange && { ...savedInputRange }, range: savedRange?.cloneRange() } };
+  }
+
+  function insertionStillValid(snapshot, generation) {
+    return armed && queryGen === generation && snapshot.el.isConnected && (isField(snapshot.el) ? snapshot.el.value : snapshot.el.textContent) === snapshot.text;
+  }
+
+  async function applyInsertion(snapshot, result, generation) {
+    if (!result?.content || !insertionStillValid(snapshot, generation)) return;
+    const { el } = snapshot;
+    el.focus();
+    if (snapshot.mode === 'inline') selectInlineRange(el, snapshot.start, snapshot.end ?? snapshot.start);
+    else restoreSelection(el, snapshot.selection);
+    await new Promise((r) => setTimeout(r, 30));
+    if (!insertionStillValid(snapshot, generation) || editableFrom(document.activeElement) !== el) return;
+    const ok = await writeText(el, result.content);
+    if (!ok) {
+      try { await navigator.clipboard.writeText(result.content); showToast('已复制，请粘贴到输入框'); } catch { showToast('写入失败，请手动粘贴'); return; }
+    }
+    if (!await bg('palette-used', { id: snapshot.id }, true)) showToast('内容已取用，取用次数暂未保存。');
+  }
+
+  function renderTemplate(session) {
+    queryInput = null;
+    const form = el('form', 'fc-template-form');
+    const toolbar = el('div', 'fc-template-toolbar');
+    const tabs = el('div');
+    const documentBody = el('div', 'fc-template-document');
+    const result = el('pre', 'fc-template-document fc-template-result');
+    result.hidden = true;
+    const fields = [];
+    const values = Object.create(null);
+    session.values = values;
+    const error = el('p', 'fc-template-error');
+    error.setAttribute('role', 'alert');
+    error.hidden = true;
+    const progress = el('span', 'fc-template-progress');
+    const button = (text) => { const node = el('button', 'fc-template-button', text); node.type = 'button'; return node; };
+    const fillTab = button('填写');
+    const resultTab = button('渲染结果');
+    const preview = () => {
+      result.textContent = session.template.segments.map((segment) => segment.name === undefined ? segment.text : values[segment.name]?.trim() ? values[segment.name] : segment.raw).join('');
+      progress.textContent = `已填写 ${session.template.names.filter((name) => values[name]?.trim()).length}/${session.template.names.length}`;
+    };
+    const switchView = (showResult) => {
+      documentBody.hidden = showResult;
+      result.hidden = !showResult;
+      fillTab.setAttribute('aria-pressed', String(!showResult));
+      resultTab.setAttribute('aria-pressed', String(showResult));
+    };
+    fillTab.addEventListener('click', (e) => { if (e.isTrusted) switchView(false); });
+    resultTab.addEventListener('click', (e) => { if (e.isTrusted) switchView(true); });
+    const seen = new Set();
+    session.template.segments.forEach((segment) => {
+      if (segment.name === undefined) { documentBody.appendChild(document.createTextNode(segment.text)); return; }
+      const field = el('textarea', 'fc-variable');
+      field.rows = 1;
+      field.placeholder = segment.name;
+      field.setAttribute('aria-label', segment.name);
+      if (seen.has(segment.name)) field.tabIndex = -1;
+      seen.add(segment.name);
+      fields.push({ name: segment.name, field });
+      field.addEventListener('input', (e) => {
+        if (!e.isTrusted || templateSession !== session) return;
+        values[segment.name] = field.value;
+        fields.filter((item) => item.name === segment.name).forEach((item) => {
+          if (item.field !== field) item.field.value = field.value;
+          item.field.style.height = 'auto';
+          item.field.style.height = `${Math.max(32, item.field.scrollHeight)}px`;
+        });
+        error.hidden = true;
+        preview();
+      });
+      documentBody.appendChild(field);
+    });
+    const actions = el('div', 'fc-template-actions');
+    const cancel = button('取消');
+    cancel.addEventListener('click', (e) => { if (e.isTrusted) { close(); session.snapshot.el.focus(); } });
+    const submit = button('插入结果');
+    submit.type = 'submit';
+    submit.classList.add('fc-template-submit');
+    form.addEventListener('submit', (e) => { e.preventDefault(); if (e.isTrusted) void submitTemplate(); });
+    session.validate = () => {
+      const missing = session.template.names.find((name) => !values[name]?.trim());
+      if (!missing) return true;
+      switchView(false);
+      error.textContent = `请填写：${missing}`;
+      error.hidden = false;
+      fields.find((item) => item.name === missing).field.focus();
+      return false;
+    };
+    session.form = form;
+    tabs.append(fillTab, resultTab);
+    toolbar.append(tabs, progress);
+    actions.append(cancel, submit);
+    form.append(el('strong', '', '使用 Prompt'), toolbar, documentBody, result, error, el('p', 'fc-template-hint', '本次填写不修改收藏。Ctrl / ⌘ + Enter 插入，Esc 取消。'), actions);
+    panel.replaceChildren(form);
+    preview();
+    switchView(false);
+    positionPanel();
+    (fields[0]?.field ?? submit).focus();
+  }
+
+  async function submitTemplate() {
+    const session = templateSession;
+    if (!session || session.busy || !session.validate()) return;
+    if (!insertionStillValid(session.snapshot, session.generation)) { close(); showToast('原输入框已变化，请重新取用。'); return; }
+    session.busy = true;
+    for (const control of session.form.elements) control.disabled = true;
+    const result = await bg('palette-insert', { id: session.snapshot.id, values: session.values, templateContent: session.content, deferUsage: true });
+    if (!open || templateSession !== session) return;
+    if (!result) {
+      session.busy = false;
+      for (const control of session.form.elements) control.disabled = false;
+      return;
+    }
+    if (!insertionStillValid(session.snapshot, session.generation)) { close(); return; }
+    close();
+    await applyInsertion(session.snapshot, result, queryGen);
+  }
+
   async function insert(index, event) {
     if (event && !event.isTrusted) return;
     const item = items[index];
     if (!item || !target) return close();
-    const el = target;
-    const m = mode;
-    const start = anchorOffset;
-    const pos = caretCharOffset(el);
-    const insertId = item.id;
-    const selection = { inputRange: savedInputRange && { ...savedInputRange }, range: savedRange?.cloneRange() };
-    close();
-    const result = await bg('palette-insert', { id: insertId });
-    if (!result?.content) return;
-    el.focus();
-    if (m === 'inline') selectInlineRange(el, start, pos ?? start);
-    else restoreSelection(el, selection);
-    await new Promise((r) => setTimeout(r, 30));
-    const ok = await writeText(el, result.content);
-    if (!ok) {
-      try { await navigator.clipboard.writeText(result.content); showToast('已复制，请粘贴到输入框'); } catch { showToast('写入失败，请手动粘贴'); }
+    if (preparingTemplate || templateSession) return;
+    const snapshot = insertionSnapshot(item);
+    if (item.templateEnabled) {
+      preparingTemplate = true;
+      const generation = queryGen;
+      const result = await bg('palette-template', { id: item.id });
+      if (!open || !insertionStillValid(snapshot, generation)) {
+        if (open) { preparingTemplate = false; if (queryGen === generation) close(); }
+        return;
+      }
+      preparingTemplate = false;
+      if (!result) return;
+      templateSession = { ...result, snapshot, generation };
+      cancelDismiss();
+      renderTemplate(templateSession);
+      return;
     }
+    close();
+    const generation = queryGen;
+    const result = await bg('palette-insert', { id: snapshot.id, deferUsage: true });
+    await applyInsertion(snapshot, result, generation);
   }
 
   function bind(targetEl, type, handler, opts) {
@@ -548,6 +696,7 @@
 
   function destroy() {
     close();
+    queryGen += 1;
     unbind.splice(0).forEach((off) => { try { off(); } catch { /* 旧监听可能已失效 */ } });
     host?.remove();
     toastHost?.remove();

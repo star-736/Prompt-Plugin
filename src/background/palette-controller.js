@@ -1,6 +1,7 @@
 import { applyDatabaseChange, captureSelection, displayTitle, formatPaletteInsert, isReadOnlyDatabase, loadDatabase, paletteAssets, READ_ONLY_MESSAGE, recordAssetUse } from '../core/store.js';
 import { inPlaceAllowsOrigin, livePaletteUpdate, originOfUrl, PALETTE_SCRIPT_FILE, PALETTE_SCRIPT_ID, paletteTypesForUrl, patternsForSites } from '../content/in-place.js';
 import { scheduleAi } from './ai-worker.js';
+import { fillPromptTemplate, parsePromptTemplate, promptTemplateEnabled } from '../core/prompt-template.js';
 
 export const CAPTURE_MENU_ID = 'futurecontext-capture-selection';
 export const NOTICE_KEY = 'futurecontext.notice';
@@ -144,7 +145,7 @@ export function ensureContextMenu() {
 // ---- 取用面板消息 ----
 function paletteSummary(asset) {
   const preview = (asset.type === 'skill' && asset.skillDescription ? asset.skillDescription : asset.content).replace(/\s+/g, ' ').trim();
-  return { id: asset.id, type: asset.type, typeLabel: paletteLabels[asset.type] ?? asset.type, title: displayTitle(asset), preview: preview.slice(0, 160), pinned: Boolean(asset.pinned) };
+  return { id: asset.id, type: asset.type, typeLabel: paletteLabels[asset.type] ?? asset.type, title: displayTitle(asset), preview: preview.slice(0, 160), pinned: Boolean(asset.pinned), templateEnabled: promptTemplateEnabled(asset) };
 }
 function senderPageUrl(sender) {
   return sender?.tab?.url || sender?.url || '';
@@ -157,15 +158,43 @@ export async function queryPalette(query, sender) {
   if (!inPlaceAllowsOrigin(db.settings.inPlace, senderOrigin(sender))) return [];
   return paletteAssets(db, query ?? '', 8, { types: paletteTypesForUrl(senderPageUrl(sender)) }).map(paletteSummary);
 }
-export async function paletteInsert(id, sender) {
-  const database = await loadDatabase();
+function paletteAsset(database, id, sender) {
   if (!inPlaceAllowsOrigin(database.settings.inPlace, senderOrigin(sender))) throw new Error('当前站点未启用就地取用。');
   const allowed = new Set(paletteTypesForUrl(senderPageUrl(sender)));
   const asset = database.assets.find((item) => item.id === id && item.privacy === 'normal');
   if (!asset) throw new Error('找不到该条目。');
   if (!allowed.has(asset.type)) throw new Error('当前页面不能取用该类型的资产。');
-  if (!isReadOnlyDatabase(database)) await applyDatabaseChange((latest) => recordAssetUse(latest, id));
-  return { content: formatPaletteInsert(asset) };
+  return asset;
+}
+
+export async function preparePaletteTemplate(id, sender) {
+  const asset = paletteAsset(await loadDatabase(), id, sender);
+  if (!promptTemplateEnabled(asset)) throw new Error('该条目未启用占位符模式，请重新选择。');
+  return { content: asset.content, template: parsePromptTemplate(asset.content) };
+}
+
+export async function paletteInsert(id, sender, { values, templateContent, deferUsage = false } = {}) {
+  const database = await loadDatabase();
+  let content;
+  const resolve = (latest) => {
+    const asset = paletteAsset(latest, id, sender);
+    if (promptTemplateEnabled(asset)) {
+      if (templateContent !== asset.content) throw new Error('模板已修改，请重新选择并填写。');
+      if (!values || typeof values !== 'object' || Array.isArray(values)) throw new Error('请先填写占位符。');
+      content = fillPromptTemplate(parsePromptTemplate(asset.content), values);
+    } else {
+      if (templateContent !== undefined) throw new Error('模板模式已修改，请重新选择。');
+      content = formatPaletteInsert(asset);
+    }
+  };
+  if (isReadOnlyDatabase(database)) resolve(database);
+  else await applyDatabaseChange((latest) => { resolve(latest); return deferUsage ? null : recordAssetUse(latest, id); });
+  return { content };
+}
+
+export async function recordPaletteUse(id, sender) {
+  if (isReadOnlyDatabase(await loadDatabase())) return;
+  await applyDatabaseChange((latest) => { paletteAsset(latest, id, sender); return recordAssetUse(latest, id); });
 }
 
 export async function paletteSettings(sender) {

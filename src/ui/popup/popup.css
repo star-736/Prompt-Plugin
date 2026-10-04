@@ -246,3 +246,15 @@ html:not(.toolbar-popup) .field textarea.skill-editor { min-height: clamp(220px,
 .library-sync-status { color: #8994a3; font-size: 11px; line-height: 1.5; }
 .library-sync-status.is-error { color: #a23b3b; }
 @media (max-width: 480px) { .library-sync-fields { grid-template-columns: minmax(0, 1fr); } }
+
+.template-toggle { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.template-toggle input { accent-color: #6385ae; width: auto; }
+.prompt-mode-tabs, .prompt-use-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.prompt-mode-tabs { justify-content: flex-start; border-bottom: 1px solid #e3e8ef; padding-bottom: 10px; }
+.prompt-use-form { min-width: 0; }
+.prompt-use-toolbar .button[aria-pressed="true"] { color: #41668f; background: #edf3fa; }
+.prompt-document { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 2.4; padding: 18px; border: 1px solid #dfe5ed; border-radius: 10px; background: #fff; min-height: 150px; margin: 0; }
+.prompt-document[hidden] { display: none; }
+.prompt-variable { display: inline-block; vertical-align: middle; width: 20ch; max-width: 100%; min-height: 34px; padding: 6px 9px; margin: 3px 4px; border: 1px solid #bdcde0; border-radius: 6px; background: #f4f7fb; color: #273141; resize: vertical; font: inherit; line-height: 1.5; }
+.prompt-variable:focus { outline: 2px solid #92b2d8; outline-offset: 1px; }
+@media (max-width: 400px) { .prompt-document { padding: 12px; } .prompt-use-toolbar { flex-wrap: wrap; } }

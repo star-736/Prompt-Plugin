@@ -1,5 +1,6 @@
 import { escapeHtml } from '../markup.js';
 import { createCategory, discardDraft, getDraft, saveAsset, saveDraft, scopeFor } from '../../core/store.js';
+import { parsePromptTemplate } from '../../core/prompt-template.js';
 
 // One instance owns one editor lifecycle, including the in-flight draft and save.
 export function createAssetEditor({ getDatabase, commit, onChange, onExit, showConfirm, showToast, scheduleAi }) {
@@ -11,22 +12,23 @@ export function createAssetEditor({ getDatabase, commit, onChange, onExit, showC
     return {
       title: form.querySelector('#editor-title-input')?.value ?? '',
       content: form.querySelector('#editor-content')?.value ?? '',
-      categoryId: form.querySelector('#editor-category')?.value || null
+      categoryId: form.querySelector('#editor-category')?.value || null,
+      templateEnabled: form.querySelector('#editor-template-enabled')?.checked === true
     };
   }
 
   function editorChanged(values = editorValues()) {
     const baseline = session?.baseline ?? { title: '', content: '', categoryId: null };
-    return values.title !== baseline.title || values.content !== baseline.content || (values.categoryId || null) !== (baseline.categoryId || null);
+    return values.title !== baseline.title || values.content !== baseline.content || (values.categoryId || null) !== (baseline.categoryId || null) || Boolean(values.templateEnabled) !== Boolean(baseline.templateEnabled);
   }
 
   function open({ asset = null, type = asset?.type, privacy = asset?.privacy, categoryId = null } = {}) {
     const reference = { type, privacy, id: asset?.id ?? null };
     const draft = getDraft(getDatabase(), reference);
     const baseline = asset
-      ? { title: asset.type === 'generic' ? asset.title : '', content: asset.content, categoryId: ['generic', 'skill', 'command'].includes(asset.type) ? asset.categoryId : null }
-      : { title: '', content: '', categoryId: ['generic', 'skill', 'command'].includes(type) && privacy !== 'private' ? categoryId : null };
-    const values = draft ? { title: draft.title ?? '', content: draft.content ?? '', categoryId: draft.categoryId ?? null } : baseline;
+      ? { title: asset.type === 'generic' ? asset.title : '', content: asset.content, categoryId: ['generic', 'skill', 'command'].includes(asset.type) ? asset.categoryId : null, templateEnabled: asset.templateEnabled === true }
+      : { title: '', content: '', categoryId: ['generic', 'skill', 'command'].includes(type) && privacy !== 'private' ? categoryId : null, templateEnabled: false };
+    const values = draft ? { title: draft.title ?? '', content: draft.content ?? '', categoryId: draft.categoryId ?? null, templateEnabled: draft.templateEnabled === true } : baseline;
     session = { type, privacy, assetId: asset?.id ?? null, reference, baseline, values };
   }
 
@@ -44,6 +46,16 @@ export function createAssetEditor({ getDatabase, commit, onChange, onExit, showC
     form.setAttribute('aria-busy', String(busy));
     for (const control of form.elements) control.disabled = busy;
     form.querySelector('[type="submit"]').textContent = busy ? '正在保存…' : editor.error ? '重试保存' : '保存';
+    const summary = form.querySelector('#editor-template-summary');
+    if (summary) {
+      const values = editorValues();
+      form.querySelector('[data-action="copy-editor"]').textContent = values.templateEnabled ? '试用模板' : '复制';
+      summary.hidden = !values.templateEnabled;
+      try {
+        const { names } = parsePromptTemplate(values.content);
+        summary.textContent = names.length ? `已识别 ${names.length} 个占位符：${names.join('、')}` : '尚未识别到占位符，可在正文中使用 {{名称}}。';
+      } catch (error) { summary.textContent = error.message; }
+    }
   }
 
   function persistEditorDraft() {
@@ -61,7 +73,7 @@ export function createAssetEditor({ getDatabase, commit, onChange, onExit, showC
           await commit((db) => {
             if (session !== editor || editor.saving || editor.closing) return null;
             const baseline = editor.baseline;
-            const changed = snapshot.title !== baseline.title || snapshot.content !== baseline.content || snapshot.categoryId !== baseline.categoryId;
+            const changed = snapshot.title !== baseline.title || snapshot.content !== baseline.content || snapshot.categoryId !== baseline.categoryId || Boolean(snapshot.templateEnabled) !== Boolean(baseline.templateEnabled);
             return changed ? saveDraft(db, editor.reference, snapshot) : discardDraft(db, editor.reference);
           });
           if (editor.errorKind === 'draft') { editor.error = ''; editor.errorKind = null; }
@@ -204,11 +216,12 @@ export function createAssetEditor({ getDatabase, commit, onChange, onExit, showC
     return `${readOnlyBanner}${heading}<form class="editor-form" id="editor-form">
       ${titleField}
       ${categories}
+      ${['generic', 'aigc'].includes(type) ? `<label class="template-toggle"><input id="editor-template-enabled" type="checkbox" ${values.templateEnabled ? 'checked' : ''} />启用占位符模式</label><p class="form-help">使用双花括号，例如 {{场景}}；使用时填写，收藏保留模板原文。</p><p class="form-help" id="editor-template-summary" hidden></p>` : ''}
       <div class="field"><label>${contentLabel}<textarea id="editor-content" class="${isSkill ? 'skill-editor' : isCommand ? 'command-editor' : ''}" ${isSkill ? '' : 'required'}>${escapeHtml(values.content)}</textarea></label>${contentHelp}</div>
       <p class="form-help editor-error" id="editor-error" role="alert" hidden></p>
       <p class="form-help" id="editor-progress" role="status" hidden></p>
       <div class="editor-footer">
-        <button class="button button-ghost button-small copy-editor" type="button" data-action="copy-editor">复制</button>
+        <button class="button button-ghost button-small copy-editor" type="button" data-action="copy-editor">${values.templateEnabled ? '试用模板' : '复制'}</button>
         <span class="status-line">${existing ? `上次保存 ${new Date(existing.updatedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}` : ''}</span>
         <button class="button button-primary button-small" type="submit">保存</button>
       </div>
