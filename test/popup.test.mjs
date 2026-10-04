@@ -37,6 +37,10 @@ stub = createChromeStub({
   indexedDB: indexedDb,
   sendMessage: async (message) => {
     messages.push(message);
+    if (message.type === 'library-sync-open' || message.type === 'library-sync-settings') return { ok: true, result: { repository: 'owner/repo', enabled: false, automatic: true, configured: false, status: { state: 'idle', message: '尚未同步' } } };
+    if (message.type === 'library-sync-configure') return { ok: true, result: { ...message.config, token: undefined, configured: true, status: { state: 'idle', message: '已保存，等待同步' } } };
+    if (message.type === 'library-sync-now') return { ok: true, result: { repository: 'owner/repo', enabled: true, automatic: true, configured: true, status: { state: 'success', message: '同步完成' } } };
+    if (message.type === 'library-sync-remove') return { ok: true, result: { repository: '', enabled: false, automatic: true, configured: false, status: { state: 'idle', message: '同步设置与 Token 已移除' } } };
     if (message.type === 'read-notice') return { ok: true, result: { message: '刚才保存成功' } };
     if (message.type === 'sync-sites') return { ok: true, result: { sites: 1 } };
     if (message.type === 'schedule-ai') return { ok: true, result: { ok: true } };
@@ -271,7 +275,7 @@ test('GitHub Token can be saved, replaced and removed without rendering its valu
   assert.match(document.querySelector('#app').textContent, /提高公开仓库的 GitHub API 额度/);
   assert.match(document.querySelector('#app').textContent, /明文只存在此浏览器配置文件中/);
   assert.match(document.querySelector('#app').textContent, /不写入备份/);
-  assert.doesNotMatch(document.querySelector('#app').textContent, /私有仓库/);
+  assert.doesNotMatch(document.querySelector('#github-token-form').parentElement.textContent, /私有仓库/);
   for (const token of ['ghp_example', 'github_pat_replacement']) {
     document.querySelector('#github-token').value = token;
     document.querySelector('#github-token-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
@@ -1118,4 +1122,29 @@ test('invalid backup reports an error and preserves existing data', async () => 
   input.dispatchEvent(new window.Event('change', { bubbles: true }));
   await waitFor(() => toastText() === '这不是 FutureContext 的有效备份文件。');
   assert.deepEqual(stub.local['futurecontext.v1'], before);
+});
+
+
+test('private-repository sync settings save dedicated token without echo, run immediately and remove credentials', async () => {
+  click('[data-action="settings"]');
+  const form = document.querySelector('#library-sync-form');
+  assert.ok(form);
+  assert.equal(form.querySelector('[name="repository"]').value, 'owner/repo');
+  assert.equal(form.querySelector('[name="token"]').value, '');
+  form.querySelector('[name="token"]').value = 'github_pat_sync_ui';
+  form.querySelector('[name="enabled"]').checked = true;
+  form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  await waitFor(() => messages.some((message) => message.type === 'library-sync-now'));
+  await waitFor(() => document.querySelector('#library-sync-form').textContent.includes('同步完成'));
+  const configured = messages.find((message) => message.type === 'library-sync-configure');
+  assert.equal(configured.config.token, 'github_pat_sync_ui');
+  assert.equal(configured.config.enabled, true);
+  assert.equal(configured.config.automatic, true);
+  assert.doesNotMatch(document.querySelector('#app').innerHTML, /github_pat_sync_ui/);
+  assert.equal(stub.local['futurecontext.github-token'], undefined);
+  click('[data-action="library-sync-now"]');
+  await waitFor(() => messages.filter((message) => message.type === 'library-sync-now').length === 2);
+  click('[data-action="library-sync-remove"]');
+  await waitFor(() => document.querySelector('#library-sync-form').textContent.includes('同步设置与 Token 已移除'));
+  assert.equal(document.querySelector('#library-sync-form [name="token"]').value, '');
 });

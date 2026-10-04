@@ -190,8 +190,9 @@ export function saveAsset(database, input, { now = Date.now(), id = newId() } = 
   const existingIndex = input.id ? next.assets.findIndex((asset) => asset.id === input.id) : -1;
   if (input.id && existingIndex < 0) throw new Error('找不到要更新的条目。');
   const existing = existingIndex >= 0 ? next.assets[existingIndex] : null;
+  if (existing?.privacy === 'normal' && validated.privacy === 'private') next.syncWithdrawals = [...new Set([...(next.syncWithdrawals ?? []), existing.id])];
   const legacyAigc = existing?.type === 'aigc' ? { title: existing.title ?? '', categoryId: existing.categoryId ?? null } : null;
-  const asset = { ...(existing ?? { id, createdAt: now, useCount: 0, lastUsedAt: null, pinned: false }), ...validated, ...(legacyAigc ?? {}), titleSource: titleSource(existing, validated), categorySource: categorySource(existing, validated), updatedAt: now };
+  const asset = { ...(existing ?? { id, createdAt: now, useCount: 0, lastUsedAt: null, pinned: false }), ...validated, ...(legacyAigc ?? {}), ...(existing?.privacy === 'private' && validated.privacy === 'normal' ? { id: newId() } : {}), titleSource: titleSource(existing, validated), categorySource: categorySource(existing, validated), updatedAt: now };
   if (existingIndex >= 0) next.assets[existingIndex] = asset; else next.assets.push(asset);
   enqueueIfEligible(next, existing, asset, now); delete next.drafts[draftKey({ type: asset.type, privacy: asset.privacy, id: input.id || null })];
   return { database: next, asset, queued: next.ai.queue.some((entry) => entry.assetId === asset.id) };
@@ -236,7 +237,7 @@ export function updateStructureProposal(database, id, groups) { const next = nor
 export function updateAiSettings(database, patch) { const next = normalizeDatabase(clone(database)); next.ai = normalizeAi({ ...next.ai, ...patch, thresholds: { ...next.ai.thresholds, ...(patch.thresholds ?? {}) } }); return next; }
 
 export function removeAsset(database, id) { const next = normalizeDatabase(clone(database)); const asset = next.assets.find((item) => item.id === id); if (!asset) throw new Error('找不到要删除的条目。'); next.assets = next.assets.filter((item) => item.id !== id); next.ai.queue = next.ai.queue.filter((entry) => entry.assetId !== id); delete next.drafts[draftKey({ type: asset.type, privacy: asset.privacy, id })]; return next; }
-export function moveAigcAsset(database, id, privacy, now = Date.now()) { if (!['normal', 'private'].includes(privacy)) throw new Error('不支持的目标资料库。'); const next = normalizeDatabase(clone(database)); const index = next.assets.findIndex((asset) => asset.id === id); if (index < 0 || next.assets[index].type !== 'aigc') throw new Error('只有 AIGC Prompt 可以在资料库间移动。'); next.assets[index] = { ...next.assets[index], privacy, categoryId: null, pinned: privacy === 'normal' && Boolean(next.assets[index].pinned), updatedAt: now }; return next; }
+export function moveAigcAsset(database, id, privacy, now = Date.now()) { if (!['normal', 'private'].includes(privacy)) throw new Error('不支持的目标资料库。'); const next = normalizeDatabase(clone(database)); const index = next.assets.findIndex((asset) => asset.id === id); if (index < 0 || next.assets[index].type !== 'aigc') throw new Error('只有 AIGC Prompt 可以在资料库间移动。'); if (next.assets[index].privacy === 'normal' && privacy === 'private') next.syncWithdrawals = [...new Set([...(next.syncWithdrawals ?? []), id])]; next.assets[index] = { ...next.assets[index], ...(next.assets[index].privacy === 'private' && privacy === 'normal' ? { id: newId() } : {}), privacy, categoryId: null, pinned: privacy === 'normal' && Boolean(next.assets[index].pinned), updatedAt: now }; return next; }
 
 const sortComparators = {
   updated: (a, b) => b.updatedAt - a.updatedAt,
@@ -414,7 +415,7 @@ export const DATABASE_WRITE_LOCK = `${APP_STORAGE_KEY}:write`;
 export const SAVE_BUSY_MESSAGE = '资料库正忙，尚未开始保存，请稍后重试。';
 const storageQueues = new WeakMap();
 
-async function withDatabaseWriteLock(storage, run, { locks = globalThis.navigator?.locks, lockTimeout = 10000 } = {}) {
+export async function withDatabaseWriteLock(storage, run, { locks = globalThis.navigator?.locks, lockTimeout = 10000 } = {}) {
   if (locks?.request) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), lockTimeout);

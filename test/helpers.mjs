@@ -203,6 +203,7 @@ export function createChromeStub(options = {}) {
       }
     },
     alarms: {
+      async clear(name) { const index = alarms.findIndex((alarm) => alarm.name === name); if (index >= 0) alarms.splice(index, 1); return index >= 0; },
       async create(name, info) { alarms.push({ name, info }); },
       onAlarm: { addListener(listener) { listeners.alarm.push(listener); } }
     },
