@@ -144,14 +144,14 @@ export function patternsForSites(sites) {
 }
 
 export const DEFAULT_PALETTE_TYPES = Object.freeze(['generic', 'skill']);
-export const PALETTE_TYPES_AIGC_ONLY = Object.freeze(['aigc']);
+const PALETTE_TYPES_AIGC_ONLY = Object.freeze(['aigc']);
 
 /**
  * 取用面板按页面 URL 切换资产类型。默认只有 generic + skill；
  * 匹配 host（含子域 / www）且 pathname 为 pathPrefix 或其子路径时，改用该规则的 types。
  * 之后加「某站的绘画页」只需再加一条，不改匹配逻辑。
  */
-export const PALETTE_TYPE_RULES = Object.freeze([
+const PALETTE_TYPE_RULES = Object.freeze([
   { hosts: Object.freeze(['grok.com']), pathPrefix: '/imagine', types: PALETTE_TYPES_AIGC_ONLY }
 ]);
 

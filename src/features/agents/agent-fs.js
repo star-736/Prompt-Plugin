@@ -32,7 +32,7 @@ export async function ensureReadWrite(handle, { prompt = true } = {}) {
   throw new Error('没有该目录的访问权限。请允许访问。');
 }
 
-export async function getChildDirectory(root, name, create = false) {
+async function getChildDirectory(root, name, create = false) {
   try {
     return await root.getDirectoryHandle(name, { create });
   } catch (error) {
@@ -41,7 +41,7 @@ export async function getChildDirectory(root, name, create = false) {
   }
 }
 
-export async function readFileText(directory, name) {
+async function readFileText(directory, name) {
   try {
     const fileHandle = await directory.getFileHandle(name);
     return await (await fileHandle.getFile()).text();
@@ -51,7 +51,7 @@ export async function readFileText(directory, name) {
   }
 }
 
-export async function readSkillMarkdown(directory) {
+async function readSkillMarkdown(directory) {
   return await readFileText(directory, 'SKILL.md') ?? await readFileText(directory, 'skill.md');
 }
 
@@ -78,7 +78,7 @@ export async function resolveSkillsDirectory(handle, targetId, { create = false 
   return { handle, displayName: handle.name || 'skills' };
 }
 
-export async function writeFileBytes(directory, name, bytes) {
+async function writeFileBytes(directory, name, bytes) {
   const fileHandle = await directory.getFileHandle(name, { create: true });
   const writable = await fileHandle.createWritable();
   await writable.write(bytes);
@@ -167,7 +167,7 @@ export async function scanSkillPresence(root, { asset, assetId, record }, index)
   };
 }
 
-export async function inspectWritableSlot(root, slug, assetId) {
+async function inspectWritableSlot(root, slug, assetId) {
   const skillDir = await getChildDirectory(root, slug, false);
   if (!skillDir) return { kind: 'missing' };
   const markerText = await readFileText(skillDir, DELIVERY_MARKER);
@@ -190,10 +190,6 @@ export async function writeDelivery(root, { slug, files, marker, assetId }) {
   await inspectWritableSlot(root, slug, assetId);
   const skillDir = await writeSkillFiles(root, { slug, files });
   await writeFileBytes(skillDir, DELIVERY_MARKER, new TextEncoder().encode(`${JSON.stringify(marker, null, 2)}\n`));
-}
-
-export async function refreshLocalSkill(root, { slug, files }) {
-  await writeSkillFiles(root, { slug, files });
 }
 
 export async function recallDelivery(root, { slug, assetId }) {

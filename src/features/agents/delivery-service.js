@@ -1,7 +1,7 @@
 import { applyDatabaseChange, clearSkillDeliveryTarget, isReadOnlyDatabase, READ_ONLY_MESSAGE, loadDatabase, setSkillDeliveryTarget } from '../../core/store.js';
 import { agentPathHint, agentTarget, createDeliveryMarker, deliveryFiles, deliveryRecord, isAgentTarget, skillSlug } from './agent-deliver.js';
 import { deleteBinding, getBinding, putBinding } from './agent-folders.js';
-import { ensureReadWrite, recallDelivery, refreshLocalSkill, resolveSkillsDirectory, scanSkillPresence, writeDelivery } from './agent-fs.js';
+import { ensureReadWrite, recallDelivery, resolveSkillsDirectory, scanSkillPresence, writeDelivery, writeSkillFiles } from './agent-fs.js';
 import { getPackage } from '../../platform/package-store.js';
 
 export async function copyPathHint(targetId) {
@@ -76,7 +76,7 @@ export async function runDeliverAction({ action, assetId, target, pickFolder, al
     const inspection = await scanSkillPresence(root, { asset, assetId: asset.id, record: deliveryRecord(asset, target) });
     if (inspection.kind === 'missing') throw new Error(`${info.label} 目录里没有找到这份 Skill。`);
     const packageRecord = asset.skillPackage?.packageId ? await getPackage(asset.skillPackage.packageId) : null;
-    await refreshLocalSkill(root, { slug: inspection.slug, files: deliveryFiles(asset, packageRecord) });
+    await writeSkillFiles(root, { slug: inspection.slug, files: deliveryFiles(asset, packageRecord) });
     return { message: `已用库里的版本更新 ${info.label} 里的本地副本。不是投递，撤回不会动它。` };
   }
   if (action === 'recall') {

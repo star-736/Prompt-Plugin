@@ -8,7 +8,7 @@ export const SYNC_CONFIG_KEY = 'futurecontext.github-sync';
 export const SYNC_STATUS_KEY = 'futurecontext.github-sync-status';
 export const SYNC_FORMAT = 'futurecontext.library-sync';
 export const SYNC_PATH = '.futurecontext/library.json';
-export const SYNC_LIMIT = 15 * 1024 * 1024;
+const SYNC_LIMIT = 15 * 1024 * 1024;
 export const SYNC_ALARM = 'futurecontext.library-sync';
 export const SYNC_DEBOUNCE_ALARM = 'futurecontext.library-sync-change';
 const clone = (value) => structuredClone(value);

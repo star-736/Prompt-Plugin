@@ -1,7 +1,7 @@
 import { activeProvider, addStructureProposal, applyAiAssetResult, applyAiCategoryGroups, applyDatabaseChange, categoriesFor, decryptProviderKey, loadDatabase, removeProviderConfig, saveProviderConfig, updateAiSettings, verifyPrivacyPassword } from '../core/store.js';
 import { buildAssetOrganizationPrompt, buildGroupingPrompt, buildStructurePrompt, chatCompletion, parseAssetResult, parseGroups } from '../features/ai/ai-organizer.js';
 
-export const SESSION_KEY = 'futurecontext.ai-session';
+const SESSION_KEY = 'futurecontext.ai-session';
 export const AI_ALARM = 'futurecontext.ai-queue';
 function sessionStorage() { return chrome.storage.session; }
 

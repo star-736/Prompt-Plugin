@@ -7,7 +7,7 @@ export const AGENT_TARGETS = Object.freeze([
   { id: 'agents', label: '通用 Agent', pathUnix: '~/.agents', pathWindows: '%USERPROFILE%\\.agents' }
 ]);
 export const AGENT_TARGET_IDS = Object.freeze(AGENT_TARGETS.map((target) => target.id));
-export const SHARED_SKILL_TARGETS = Object.freeze(['cursor', 'codex']);
+const SHARED_SKILL_TARGETS = Object.freeze(['cursor', 'codex']);
 export function usesSharedAgentsDirectory(id) {
   return SHARED_SKILL_TARGETS.includes(id);
 }
@@ -122,7 +122,7 @@ export function inspectDeliveryDirectory({ exists, markerText, assetId }) {
   return { kind: 'ours-other', marker };
 }
 
-export function normalizeSkillText(text) {
+function normalizeSkillText(text) {
   return String(text ?? '').replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/[ \t]+$/gm, '').replace(/\s+$/, '');
 }
 
@@ -186,7 +186,7 @@ export function normalizeSkillDelivery(value) {
   return Object.keys(targets).length ? { targets } : undefined;
 }
 
-export function deliveredTargetIds(asset) {
+function deliveredTargetIds(asset) {
   return Object.keys(asset?.skillDelivery?.targets ?? {}).filter(isAgentTarget);
 }
 
