@@ -272,10 +272,12 @@ function holdRuntimeMessage(type) {
 
 test('GitHub Token can be saved, replaced and removed without rendering its value', async () => {
   click('[data-action="settings"]');
-  assert.match(document.querySelector('#app').textContent, /提高公开仓库的 GitHub API 额度/);
-  assert.match(document.querySelector('#app').textContent, /明文只存在此浏览器配置文件中/);
+  assert.match(document.querySelector('#app').textContent, /检查 Skill 更新时提高 API 请求额度/);
+  assert.match(document.querySelector('#app').textContent, /明文仅保存在当前浏览器配置文件中/);
   assert.match(document.querySelector('#app').textContent, /不写入备份/);
-  assert.doesNotMatch(document.querySelector('#github-token-form').parentElement.textContent, /私有仓库/);
+  assert.match(document.querySelector('#github-token-form').parentElement.textContent, /GitHub Skill 收集 Token（可选）/);
+  assert.match(document.querySelector('#github-token-form').parentElement.textContent, /收集 Skill 文件包、检查 Skill 更新/);
+  assert.match(document.querySelector('#github-token-form').parentElement.textContent, /不参与资料库同步/);
   for (const token of ['ghp_example', 'github_pat_replacement']) {
     document.querySelector('#github-token').value = token;
     document.querySelector('#github-token-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
