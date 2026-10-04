@@ -1,4 +1,6 @@
-# 可选 GitHub 私有仓库资料库同步
+# GitHub 私有仓库同步技术规格
+
+配置步骤和失败处理见[配置指南](../CONFIGURATION.md)，产品范围见[当前规格](./SPEC.md)，方案选择理由见 [ADR 0012](../adr/0012-private-github-library-sync.md)。本文集中维护同步格式、提交、合并与调度约束。
 
 ## 范围与边界
 
@@ -24,4 +26,6 @@
 
 ## 限制
 
-JSON 上限 15 MiB，含 Base64 文件与持久标记。读取大于 Contents 内联范围的文件改用 Git blob；超限保留本地并报告。`unlimitedStorage` 支持 IndexedDB 包、精确基线和本地资产存储。Immutable 同步包采用新本地 ID，不覆盖原包，失败可能留下未引用包；删除标记不自动裁剪，以保护长期离线设备。没有真正 GitHub 服务器集成测试：单元测试使用可控 API，浏览器验证使用独立配置文件和模拟 GitHub API。
+JSON 上限 15 MiB，含 Base64 文件与持久标记。读取大于 Contents 内联范围的文件改用 Git blob；超限保留本地并报告。`unlimitedStorage` 支持 IndexedDB 包、精确基线和本地资产存储。同步包采用新的不可变本地 ID，不覆盖原包，失败可能留下未引用包；删除标记不自动裁剪，以保护长期离线设备。恢复与清理规则见 [ADR 0013](../adr/0013-recover-unreferenced-skill-packages-under-the-database-lock.md)。
+
+真实 GitHub 网络验收使用明确选择的测试配置与临时数据，模拟 API 测试不能代替真实服务验收；验证要求见[开发指南](../../AGENTS.md)。

@@ -5,7 +5,7 @@
 FutureContext 是本地优先的 Chrome / Edge Manifest V3 扩展，管理提示词、Skill、私密 AIGC 和终端指令。使用原生 JavaScript ES Modules、HTML、CSS，没有应用构建步骤。
 
 - 先阅读 [README.md](README.md) 和 [docs/CONTEXT.md](docs/CONTEXT.md)，再按任务追踪实际源码、测试与调用者。
-- 产品规格位于 `docs/specs/`，关键设计决策位于 `docs/adr/`。历史阶段文档用于理解背景；遇到与当前行为不一致的描述，应验证代码并说明差异。
+- 文档入口见 [docs/README.md](docs/README.md)；当前产品规格为 [docs/specs/SPEC.md](docs/specs/SPEC.md)，同步技术细节见 `docs/specs/SPEC_GITHUB_SYNC.md`，关键设计决策位于 `docs/adr/`。阶段背景合并在 `docs/specs/HISTORY.md`；遇到历史描述与当前行为不一致，应验证代码并说明差异。
 - 扩展从仓库根目录的 `manifest.json` 加载。`vendor/` 保存运行时使用的 Markdown 依赖及许可证；升级依赖时同时检查随扩展分发的文件，不引入运行时 CDN。
 
 ## 模块边界
