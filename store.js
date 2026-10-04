@@ -396,6 +396,16 @@ export function saveGithubSkillAsset(database, packageInfo, { now = Date.now(), 
 }
 export async function loadDatabase(storage = chrome.storage.local) {
   const result = await storage.get?.(APP_STORAGE_KEY) ?? {};
+  if (result[APP_STORAGE_KEY] === undefined) {
+    const database = createEmptyDatabase();
+    // Stable ids let separate contexts agree before the first persisted write.
+    // Only a missing database gets presets; existing/deleted categories stay as-is.
+    database.categories = [
+      { id: 'preset-command-terminal', name: '终端指令' },
+      { id: 'preset-command-browser', name: '浏览器指令' }
+    ].map((category) => ({ ...category, scope: 'command', createdAt: Date.now(), createdBy: 'human' }));
+    return database;
+  }
   return normalizeDatabase(result[APP_STORAGE_KEY]);
 }
 export const READ_ONLY_MESSAGE = '数据来自更新版本的 FutureContext，请升级扩展。当前为只读，所有修改都不会保存。';

@@ -720,6 +720,40 @@ test('simultaneous patches keep every asset and recover after a failed write', a
   assert.equal(final.revision, 12);
 });
 
+test('a new library starts with two editable command categories and no assets', async () => {
+  const storage = memoryStorage();
+  let database = await loadDatabase(storage);
+  assert.deepEqual(database.categories.map((category) => [category.scope, category.name]), [
+    ['command', '终端指令'], ['command', '浏览器指令']
+  ]);
+  assert.deepEqual(database.assets, []);
+  assert.deepEqual((await loadDatabase(storage)).categories.map((category) => category.id), database.categories.map((category) => category.id));
+  const terminal = database.categories.find((category) => category.name === '终端指令');
+  database = renameCategory(database, terminal.id, 'CLI');
+  assert.equal(await saveDatabase(database, storage), true);
+  assert.equal((await loadDatabase(storage)).categories.find((category) => category.id === terminal.id).name, 'CLI');
+  await applyDatabaseChange((db) => deleteCategory(db, terminal.id), storage);
+  assert.equal((await loadDatabase(storage)).categories.length, 1);
+  const browser = (await loadDatabase(storage)).categories[0];
+  await applyDatabaseChange((db) => deleteCategory(db, browser.id), storage);
+  assert.deepEqual((await loadDatabase(storage)).categories, []);
+});
+
+test('presets do not alter existing libraries and new commands remain uncategorized', async () => {
+  const storage = memoryStorage();
+  await applyDatabaseChange((db) => saveAsset(db, { type: 'command', content: 'chrome://restart' }, { id: 'browser' }).database, storage);
+  const database = await loadDatabase(storage);
+  assert.equal(database.categories.length, 2);
+  assert.equal(database.assets[0].categoryId, null);
+  const existing = memoryStorage();
+  existing.stored[APP_STORAGE_KEY] = createCategory(createEmptyDatabase(), 'command', '自定义', { id: 'custom' }).database;
+  assert.deepEqual((await loadDatabase(existing)).categories.map((category) => category.name), ['自定义']);
+  existing.stored[APP_STORAGE_KEY] = createEmptyDatabase();
+  assert.deepEqual((await loadDatabase(existing)).categories, []);
+  existing.stored[APP_STORAGE_KEY].version = 999;
+  assert.deepEqual((await loadDatabase(existing)).categories, []);
+});
+
 test('simultaneous snapshot saves reject the stale writer instead of both succeeding', async () => {
   const storage = memoryStorage();
   const snapshot = createEmptyDatabase();

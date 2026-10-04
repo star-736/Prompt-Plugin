@@ -137,7 +137,7 @@ if (t.name.includes('do not open the directory picker')) {
     return createMemoryDirectory();
   };
 }
-seedDatabase(stub.local, database);
+if (!t.name.startsWith('new library preset')) seedDatabase(stub.local, database);
 
 await import('../package-store.js').then(({ putPackage }) => putPackage({
   id: 'pkg-1',
@@ -767,6 +767,35 @@ test('command tab: terminal and browser commands share categorization and origin
   assert.equal(document.querySelector('.asset-command-content').textContent, 'chrome://restart');
   click(`[data-action="copy-asset"][data-id="${browser.id}"]`);
   await waitFor(async () => await window.navigator.clipboard.readText() === 'chrome://restart');
+});
+
+test('new library preset command categories can be selected, renamed, and deleted', async () => {
+  click('[data-tab="command"]');
+  await waitFor(() => document.querySelector('[data-tab="command"].is-active'));
+  click('[data-action="new-asset"]');
+  await waitFor(() => document.querySelector('#editor-form'));
+  const category = document.querySelector('#editor-category');
+  assert.deepEqual([...category.options].map((option) => option.textContent), ['未分类', '浏览器指令', '终端指令']);
+  assert.equal(category.value, '');
+  category.value = 'preset-command-browser';
+  category.dispatchEvent(new window.Event('change', { bubbles: true }));
+  document.querySelector('#editor-content').value = 'chrome://restart';
+  document.querySelector('#editor-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  await waitFor(() => !document.querySelector('#editor-form'));
+  assert.equal(stub.local['futurecontext.v1'].assets[0].categoryId, 'preset-command-browser');
+  click('[data-action="toggle-category-menu"]');
+  click('[data-action="manage-categories"]');
+  await waitFor(() => document.querySelector('[data-action="rename-category"]'));
+  click('[data-action="rename-category"][data-id="preset-command-browser"]');
+  const form = document.querySelector('#category-rename-form');
+  form.elements.name.value = 'Chrome';
+  form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  await waitFor(() => /分类已重命名/.test(toastText()));
+  click('[data-action="delete-category"][data-id="preset-command-browser"]');
+  confirmOpenDialog();
+  await waitFor(() => /分类已删除/.test(toastText()));
+  assert.equal(stub.local['futurecontext.v1'].assets[0].categoryId, null);
+  assert.deepEqual(stub.local['futurecontext.v1'].categories.map((item) => item.name), ['终端指令']);
 });
 
 test('open GitHub skill package, update, and delete with confirm', async () => {
