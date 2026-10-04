@@ -328,3 +328,19 @@ test('runtime onMessage wrapper, permission retry, and palette broadcast fallbac
   await new Promise((resolve) => setTimeout(resolve, 80));
   stub.tabs[0].url = 'https://chatgpt.com/c/1';
 });
+
+test('library sync messages trust extension tabs, reject websites, and schedule or remove automatic checks', async () => {
+  const extensionSender = { tab: { id: 7 }, url: chrome.runtime.getURL('popup.html?mode=tab') };
+  const websiteSender = { tab: { id: 7 }, url: 'https://example.com/' };
+  await assert.rejects(handleRuntimeMessage({ type: 'library-sync-configure', config: {} }, websiteSender), /扩展页/);
+  await assert.rejects(handleRuntimeMessage({ type: 'library-sync-now' }, websiteSender), /扩展页/);
+  await assert.rejects(handleRuntimeMessage({ type: 'library-sync-remove' }, websiteSender), /扩展页/);
+  const saved = await handleRuntimeMessage({ type: 'library-sync-configure', config: { repository: 'owner/repo', token: 'github_pat_sync', enabled: true } }, extensionSender);
+  assert.equal(saved.enabled, true);
+  assert.equal(saved.configured, true);
+  assert.ok(stub.alarms.some((alarm) => alarm.name === 'futurecontext.library-sync' && alarm.info.periodInMinutes === 5));
+  assert.equal((await handleRuntimeMessage({ type: 'library-sync-settings' }, extensionSender)).repository, 'owner/repo');
+  await handleRuntimeMessage({ type: 'library-sync-remove' }, extensionSender);
+  assert.equal((await handleRuntimeMessage({ type: 'library-sync-now' }, extensionSender)).enabled, false);
+  assert.equal((await handleRuntimeMessage({ type: 'library-sync-open' }, extensionSender)).enabled, false);
+});

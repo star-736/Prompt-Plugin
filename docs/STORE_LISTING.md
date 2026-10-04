@@ -17,9 +17,9 @@
 
 FutureContext 是一个本地优先的浏览器扩展，用来保存那些现在想到、未来还会复用的 内容与指令。你可以在工具栏弹窗里创建、分类、搜索、编辑、复制和删除通用 Prompt、Skill、AIGC Prompt 与指令；复制内容后，再由你自己粘贴到任意 AI 网页、终端或本地工具中。
 
-Skill 可以直接粘贴完整 `SKILL.md`，也可以在公开 GitHub 的具体 `SKILL.md` 页面主动收集整个所在目录。FutureContext 会检查 `name` 和 `description`，保存文件树、资源与脚本，但绝不执行脚本。通用 Prompt 可设置可选标题并建立一级分类。指令涵盖终端命令与浏览器指令，以正文为标识、不设标题，只保存在本地普通库，不发送给后台 AI，也不出现在网页取用面板。私密 AIGC Prompt 使用单独的可恢复本地隐私锁，并以扁平列表保存，避免在锁定时泄露标题或数量。
+Skill 可以直接粘贴完整 `SKILL.md`，也可以在公开 GitHub 的具体 `SKILL.md` 页面主动收集整个所在目录。FutureContext 会检查 `name` 和 `description`，保存文件树、资源与脚本，但绝不执行脚本。通用 Prompt 可设置可选标题并建立一级分类。指令涵盖终端命令与浏览器指令，以正文为标识、不设标题，默认保存在本地普通库，可选同步到个人私有 GitHub 仓库，不发送给后台 AI，也不出现在网页取用面板。私密 AIGC Prompt 使用单独的可恢复本地隐私锁，并以扁平列表保存，避免在锁定时泄露标题或数量。
 
-FutureContext 不提供账号、云同步或自动填入。你可以选择配置自己的 OpenAI、OpenCode Go、DeepSeek、OpenRouter 或 OpenAI 兼容 Provider，让后台为通用 Prompt 补标题和归类；AIGC Prompt、指令与草稿永不发送。Provider API Key 由你的隐私锁密码加密后本地保存。GitHub 与 Provider 的站点权限仅在你主动发起操作时请求。除这些你主动启用的调用外，内容不会发送给开发者或第三方。私密库用于避免他人随手打开扩展查看内容，并非不可恢复的强加密保险箱；导出的备份也可能包含可读的私密内容，请自行妥善保存。
+FutureContext 不提供账号系统、自有云服务或自动填入；你可以选择将普通资料同步到自己的已有个人私有 GitHub 仓库，私密库与草稿不参与。你可以选择配置自己的 OpenAI、OpenCode Go、DeepSeek、OpenRouter 或 OpenAI 兼容 Provider，让后台为通用 Prompt 补标题和归类；AIGC Prompt、指令与草稿永不发送给 AI Provider。Provider API Key 由你的隐私锁密码加密后本地保存。GitHub 与 Provider 的站点权限仅在你主动发起操作时请求。除这些你主动启用的调用及私有仓库同步外，内容不会发送给开发者或第三方。私密库用于避免他人随手打开扩展查看内容，并非不可恢复的强加密保险箱；导出的备份也可能包含可读的私密内容，请自行妥善保存。
 
 ## English short description
 

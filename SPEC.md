@@ -1,5 +1,8 @@
 # FutureContext 一期产品规格
 
+> 本文记录该期原始范围。后续可选私有 GitHub 普通库同步见 [同步规格](./SPEC_GITHUB_SYNC.md)，其新增范围覆盖本文的“无云同步”限制。
+
+
 ## 产品目标
 
 FutureContext 是一个 Edge 工具栏弹窗中的本地 AI 资产库。它让用户保存、分类、编辑和复制通用 Prompt、单文件 Skill 与 AIGC Prompt；AIGC 的私密内容由可恢复的本地隐私锁遮挡。

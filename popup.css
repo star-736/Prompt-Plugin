@@ -32,7 +32,7 @@ body {
   width: 100%;
 }
 button, input, textarea, select { font: inherit; }
-.setting-row:has(#github-token-form) { grid-template-columns: minmax(0, 1fr); }
+.setting-row:has(#github-token-form), .setting-row:has(#library-sync-form) { grid-template-columns: minmax(0, 1fr); }
 #github-token-form { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
 #github-token { background: #fff; border: 1px solid #dfe5ed; border-radius: 8px; color: #273141; flex: 1 1 180px; min-width: 0; padding: 8px 9px; }
 #github-token-status { color: #a23b3b; font-size: 12px; width: 100%; }
@@ -235,3 +235,14 @@ html:not(.toolbar-popup) .field textarea.skill-editor { min-height: clamp(220px,
 @media (max-width: 680px) {
   .skill-workspace { grid-template-columns: minmax(0, 1fr); }
 }
+
+#library-sync-form { display: grid; gap: 10px; min-width: 0; }
+.library-sync-fields { display: grid; gap: 10px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.library-sync-fields label { color: #697587; display: grid; font-size: 11px; gap: 5px; min-width: 0; }
+.library-sync-fields input { background: #fff; border: 1px solid #dfe5ed; border-radius: 8px; color: #273141; min-width: 0; padding: 8px 9px; width: 100%; }
+.library-sync-options, .library-sync-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 8px 14px; }
+.library-sync-options label { align-items: center; color: #697587; display: inline-flex; font-size: 12px; gap: 5px; }
+.library-sync-options input { accent-color: #6385ae; margin: 0; }
+.library-sync-status { color: #8994a3; font-size: 11px; line-height: 1.5; }
+.library-sync-status.is-error { color: #a23b3b; }
+@media (max-width: 480px) { .library-sync-fields { grid-template-columns: minmax(0, 1fr); } }

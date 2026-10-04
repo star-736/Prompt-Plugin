@@ -565,6 +565,13 @@ function renderSettings() {
   const inPlace = state.database.settings.inPlace;
   const usage = usageSummary(state.database);
   return `${renderReadOnlyBanner()}${pageHeading('设置', 'library')}<div class="settings-list">
+    <div class="setting-row setting-row-stack"><div><div class="setting-title">GitHub 私有仓库同步</div><div class="setting-description">同步普通库及 Skill 文件，私密库与草稿仅保存在本机。使用已有个人私有仓库，专用 Token 仅授予该仓库 Contents 读写。</div></div>
+      <form id="library-sync-form">
+        <div class="library-sync-fields"><label>私有仓库<input name="repository" aria-label="同步仓库" placeholder="owner/repo" value="${escapeHtml(state.librarySync?.repository ?? '')}" required /></label><label>专用 Token<input name="token" type="password" autocomplete="new-password" aria-label="同步专用 Token" placeholder="${state.librarySync?.configured ? '已配置；留空保留' : '粘贴 Token'}" maxlength="512" /></label></div>
+        <div class="library-sync-options"><label><input name="enabled" type="checkbox" ${state.librarySync?.enabled ? 'checked' : ''} />启用同步</label><label><input name="automatic" type="checkbox" ${state.librarySync?.automatic !== false ? 'checked' : ''} />自动同步</label></div>
+        <div class="library-sync-actions"><button class="button button-primary button-small" type="submit" ${state.librarySyncBusy ? 'disabled' : ''}>保存设置</button><button class="button button-ghost button-small" type="button" data-action="library-sync-now" ${state.librarySyncBusy ? 'disabled' : ''}>${state.librarySyncBusy ? '正在同步…' : '立即同步'}</button><button class="button button-ghost button-small" type="button" data-action="library-sync-remove">移除设置</button></div>
+        <div class="library-sync-status ${state.librarySync?.status?.state === 'error' ? 'is-error' : ''}" role="status">${escapeHtml(state.librarySync?.status?.message ?? '尚未同步')}${state.librarySync?.status?.lastSyncedAt ? ` · ${new Date(state.librarySync.status.lastSyncedAt).toLocaleString()}` : ''}</div>
+      </form></div>
     <div class="setting-row setting-row-stack"><div><div class="setting-title">GitHub Token（可选）</div><div class="setting-description">${state.githubTokenConfigured ? '已配置，输入新 Token 可替换。' : '未配置，使用匿名请求额度。'}用于提高公开仓库的 GitHub API 额度，并让失败原因更清楚。明文只存在此浏览器配置文件中，不写入备份，表单不回显；卸载或清除扩展数据会删除。能使用此配置文件的人可以读取。</div></div><form id="github-token-form"><input id="github-token" type="password" autocomplete="new-password" aria-label="GitHub Token" placeholder="粘贴 GitHub Token" maxlength="512" required /><button class="button button-primary button-small" type="submit">保存 Token</button><button class="button button-ghost button-small" type="button" data-action="remove-github-token">移除 Token</button><div id="github-token-status" role="status"></div></form></div>
     <div class="setting-row"><div><div class="setting-title">隐私锁</div><div class="setting-description">${lockStatus}。重设不会删除私密内容。</div></div><button class="button button-ghost button-small" type="button" data-action="reset-lock">${hasPrivacyLock(state.database) ? '重设隐私锁' : '设置隐私锁'}</button></div>
     <div class="setting-row setting-row-stack"><div><div class="setting-title">后台 AI 整理</div><div class="setting-description">${escapeHtml(status)}${current ? ` 当前 Provider：${escapeHtml(current.label)}。` : ' 还未配置 Provider。'}</div></div><div class="setting-actions"><label class="switch-label"><input id="ai-enabled" type="checkbox" ${ai.enabled ? 'checked' : ''} />开启</label><button class="button button-ghost button-small" type="button" data-action="manage-providers">Provider</button></div></div>
@@ -1289,6 +1296,14 @@ async function handleClick(event) {
     return;
   }
   if (action === 'home') return state.view === 'editor' ? returnFromEditor() : (state.view = 'library', render());
+  if (action === 'library-sync-remove') { try { state.librarySync = await sendBackground({ type: 'library-sync-remove' }); render(); } catch (error) { showToast(error.message); } return; }
+  if (action === 'library-sync-now') {
+    state.librarySyncBusy = true; render();
+    try { state.librarySync = await sendBackground({ type: 'library-sync-now' }); showToast(state.librarySync.status.message); }
+    catch (error) { showToast(error.message); try { state.librarySync = await sendBackground({ type: 'library-sync-settings' }); } catch { /* Existing status remains. */ } }
+    finally { state.librarySyncBusy = false; render(); }
+    return;
+  }
   if (action === 'remove-github-token') {
     try { await saveGitHubToken(''); state.githubTokenConfigured = false; render(); showToast('GitHub Token 已移除，将使用匿名请求。'); }
     catch { showToast('无法移除 GitHub Token，请重试。'); }
@@ -1443,6 +1458,7 @@ function beginResetLock() {
 async function handleSubmit(event) {
   const form = event.target;
   event.preventDefault();
+  if (form.id === 'library-sync-form') { const config = { repository: form.querySelector('[name=repository]').value, token: form.querySelector('[name=token]').value, enabled: form.querySelector('[name=enabled]').checked, automatic: form.querySelector('[name=automatic]').checked }; try { await requestOrigins(['https://api.github.com/*']); state.librarySync = await sendBackground({ type: 'library-sync-configure', config }); render(); if (state.librarySync.enabled) { state.librarySync = await sendBackground({ type: 'library-sync-now' }); render(); } } catch (error) { showToast(error.message); } return; }
   if (form.id === 'github-token-form') {
     const input = form.querySelector('#github-token');
     const token = input.value;
@@ -1527,6 +1543,7 @@ async function initialize() {
     state.database = await loadDatabase();
     state.readOnly = isReadOnlyDatabase(state.database);
     state.githubTokenConfigured = Boolean(await githubToken());
+    try { state.librarySync = await sendBackground({ type: 'library-sync-open' }); } catch { /* Offline local use remains available. */ }
     state.activeTab = ['generic', 'skill', 'aigc', 'command'].includes(state.database.settings.lastNormalTab) ? state.database.settings.lastNormalTab : 'generic';
     if (standaloneTab && assetById(readerAssetId)?.type === 'skill') state.activeTab = 'skill';
     try { state.agentBindings = await listBindings(); } catch { state.agentBindings = []; }
@@ -1542,6 +1559,7 @@ async function initialize() {
       state.tabOrigin = originOfUrl(tab?.url ?? '');
     } catch { /* 无 tabs 权限时跳过。 */ }
     chrome.storage.onChanged.addListener((changes, area) => {
+      if (area === 'local' && changes['futurecontext.github-sync-status']) { state.librarySync = { ...state.librarySync, status: changes['futurecontext.github-sync-status'].newValue }; if (state.view === 'settings' && !document.querySelector('#library-sync-form')?.contains(document.activeElement)) render(); }
       if (area !== 'local' || !changes[APP_STORAGE_KEY]) return;
       const next = normalizeDatabase(changes[APP_STORAGE_KEY].newValue);
       if ((next.revision ?? 0) === (state.database?.revision ?? 0)) return;
