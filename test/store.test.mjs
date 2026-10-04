@@ -480,6 +480,25 @@ test('assetsFor respects pinned first and sort modes', () => {
   assert.deepEqual(assetsFor(database, { type: 'generic', sortBy: 'lastUsed' }).map((a) => a.id), ['b', 'c', 'a']);
 });
 
+test('assetsFor matches by category name, aligning the popup list with the in-place palette', () => {
+  let database = createEmptyDatabase();
+  // Generic Prompt: category name not present in title or content.
+  const work = createCategory(database, 'generic', '工作报告');
+  database = work.database;
+  database = saveAsset(database, { type: 'generic', title: '周总结', content: '把本周进展列三点', categoryId: work.category.id }, { now: 1, id: 'g-work' }).database;
+  database = saveAsset(database, { type: 'generic', title: '随手记', content: '买牛奶' }, { now: 2, id: 'g-misc' }).database;
+  // Searching the category name finds the categorized item (and only it).
+  assert.deepEqual(assetsFor(database, { type: 'generic', query: '工作报告' }).map((a) => a.id), ['g-work']);
+  // Title/content search still works.
+  assert.deepEqual(assetsFor(database, { type: 'generic', query: '牛奶' }).map((a) => a.id), ['g-misc']);
+
+  // Same behavior for terminal commands.
+  const browser = createCategory(database, 'command', '浏览器');
+  database = browser.database;
+  database = saveAsset(database, { type: 'command', content: 'chrome://restart', categoryId: browser.category.id }, { now: 3, id: 'cmd-br' }).database;
+  assert.deepEqual(assetsFor(database, { type: 'command', query: '浏览器' }).map((a) => a.id), ['cmd-br']);
+});
+
 test('setAssetPinned rejects private library entries', () => {
   let database = saveAsset(createEmptyDatabase(), { type: 'aigc', privacy: 'private', content: 'secret' }, { id: 'priv' }).database;
   assert.throws(() => setAssetPinned(database, 'priv', true), /私密库不提供置顶/);

@@ -247,7 +247,8 @@ function pinnedFirst(compare) { return (a, b) => Number(Boolean(b.pinned)) - Num
 export function assetsFor(database, { type, privacy = 'normal', query = '', categoryId = null, sortBy = 'updated' }) {
   const needle = String(query).trim().toLocaleLowerCase();
   const compare = sortComparators[privacy === 'private' ? 'updated' : sortBy] ?? sortComparators.updated;
-  return database.assets.filter((asset) => asset.type === type && asset.privacy === privacy).filter((asset) => type === 'aigc' || !categoryId || asset.categoryId === categoryId).filter((asset) => !needle || `${displayTitle(asset)}\n${asset.content}`.toLocaleLowerCase().includes(needle)).sort(pinnedFirst(compare));
+  const names = needle ? categoryNameMap(database) : null;
+  return database.assets.filter((asset) => asset.type === type && asset.privacy === privacy).filter((asset) => type === 'aigc' || !categoryId || asset.categoryId === categoryId).filter((asset) => !needle || `${displayTitle(asset)}\n${asset.content}\n${names.get(asset.categoryId) ?? ''}`.toLocaleLowerCase().includes(needle)).sort(pinnedFirst(compare));
 }
 export function setSortBy(database, tab, sortBy) { if (!(sortBy in SORT_OPTIONS)) throw new Error('不支持的排序方式。'); const next = normalizeDatabase(clone(database)); next.settings.sortBy = { ...next.settings.sortBy, [tab]: sortBy }; return next; }
 export function sortByFor(database, tab) { return database.settings?.sortBy?.[tab] ?? 'updated'; }
