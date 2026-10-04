@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { JSDOM } from 'jsdom';
-import { renderSkillMarkdown, resolveSkillLink, skillBody } from '../skill-reader.js';
+import { renderSkillMarkdown, resolveSkillLink, skillBody } from '../src/ui/popup/skill-reader.js';
 
 test('Skill Markdown renders full structured content while removing active HTML', () => {
   const dom = new JSDOM('');

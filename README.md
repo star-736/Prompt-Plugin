@@ -7,7 +7,7 @@ FutureContext 是一个本地优先的 Edge / Chrome 扩展，用于保存、分
 - 普通与私密 AIGC Prompt
 - 指令（终端 / CLI / AI Agent 命令、浏览器指令及快捷键速查等）
 
-完整产品范围见 [一期规格](./SPEC.md)、[二期规格](./SPEC_PHASE2.md)、[三期规格](./SPEC_PHASE3.md)、[四期规格](./SPEC_PHASE4.md) 与 [私有仓库同步规格](./SPEC_GITHUB_SYNC.md)，术语与隐私边界见 [CONTEXT.md](./CONTEXT.md)。
+完整产品范围见 [一期规格](./docs/specs/SPEC.md)、[二期规格](./docs/specs/SPEC_PHASE2.md)、[三期规格](./docs/specs/SPEC_PHASE3.md)、[四期规格](./docs/specs/SPEC_PHASE4.md) 与 [私有仓库同步规格](./docs/specs/SPEC_GITHUB_SYNC.md)，术语与隐私边界见 [CONTEXT.md](./docs/CONTEXT.md)。
 
 ## 当前能力
 
@@ -15,7 +15,7 @@ FutureContext 是一个本地优先的 Edge / Chrome 扩展，用于保存、分
 
 点击右上角「在新标签页中打开」，进入 Skill 标签后，左侧选择 Skill，右侧默认完整渲染根目录 `SKILL.md`。名称与描述单独展示，正文保留标题、列表、表格和代码块；宽屏右侧显示可折叠文件树，文件夹按层级展开，包内 Markdown 链接可以直接打开已保存的辅助文件；窄屏时文件树移到正文上方，首次打开默认收起。单文件 Skill 点击「编辑 Skill」修改，GitHub Skill 点击「管理 Skill」进入分类、投递和更新等操作。窄屏自动上下排列。
 
-Markdown 渲染依赖随扩展打包在 `vendor/` 中，发布时必须包含 `skill-reader.js` 和整个 `vendor/` 目录；不从 CDN 加载脚本。
+Markdown 渲染依赖随扩展打包在 `vendor/` 中，发布时必须包含 `src/ui/popup/skill-reader.js` 和整个 `vendor/` 目录；不从 CDN 加载脚本。
 
 ### GitHub 收集认证
 
@@ -58,16 +58,24 @@ Token 明文只存在此浏览器配置文件的扩展存储中，不写入资�
 
 1. 打开 `edge://extensions` 并开启“开发人员模式”。
 2. 点击“加载解压缩的扩展”。
-3. 选择本项目根目录 `C:\Users\STAR07\OneDrive\Desktop\prompt-plugin`。
+3. 选择本项目根目录（包含 `manifest.json` 的目录）。
 4. 将 FutureContext 固定到 Edge 工具栏后点击图标即可使用。
 
 Chrome 同样可通过 `chrome://extensions` 加载。
 
 ## 开发与验证
 
-```powershell
-npm test
+```sh
+npm ci
 npm run check
+npm test
+npm run coverage
 ```
 
-项目不依赖运行时或构建工具，使用原生 Manifest V3、`chrome.storage`、IndexedDB 与 Web Crypto。GitHub 包资源保存在 IndexedDB；API Key 使用 PBKDF2 + AES-GCM 加密后本地保存。
+项目无需构建即可加载，使用原生 JavaScript、Manifest V3、`chrome.storage`、IndexedDB 与 Web Crypto。GitHub 包资源保存在 IndexedDB；API Key 使用 PBKDF2 + AES-GCM 加密后本地保存。
+
+源码按职责组织：`src/ui/` 为扩展页面，`src/background/` 为后台消息和任务，`src/content/` 为网页取用，`src/core/` 为数据模型和业务规则，`src/features/` 为 AI、GitHub 与 Agent 功能，`src/platform/` 为浏览器存储及扩展路径。测试保存在 `test/`，产品规格在 `docs/specs/`，设计决策在 `docs/adr/`。
+
+`npm run check` 递归检查源码、测试和工具脚本的语法及本地模块/页面资源引用，并校验 manifest 入口与共享路径一致。覆盖率检查包含整个 `src/`，最低行覆盖率为 92%；CI 使用 Node.js 24。
+
+发布包必须包含根目录 `manifest.json`、完整 `src/`、`icons/` 与 `vendor/`（含依赖许可证），并保持目录层级。开发用的 `node_modules/`、`test/`、`scripts/` 和 `.git/` 不需要打包。

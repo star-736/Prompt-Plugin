@@ -1,4 +1,4 @@
-import { assertPackageLimits, isTextFile } from './package-store.js';
+import { assertPackageLimits, isTextFile } from '../../platform/package-store.js';
 
 const API_ROOT = 'https://api.github.com';
 const COMMIT_SHA = /^[0-9a-f]{40}$/i;

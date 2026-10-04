@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createEmptyDatabase, saveAsset, createCategory, applyDatabaseChange, loadDatabase, APP_STORAGE_KEY } from '../store.js';
-import { libraryRecords, validateSyncDocument, mergeLibrary, applyLibrary, configureSync, removeSyncConfiguration, syncSettings, runLibrarySync, scheduleLibrarySync, relevantLibraryChange, SYNC_CONFIG_KEY, SYNC_STATUS_KEY, SYNC_FORMAT, SYNC_PATH } from '../github-sync.js';
+import { addStructureProposal, resolveStructureProposal, createEmptyDatabase, saveAsset, createCategory, applyDatabaseChange, loadDatabase, APP_STORAGE_KEY } from '../src/core/store.js';
+import { libraryRecords, validateSyncDocument, mergeLibrary, applyLibrary, configureSync, removeSyncConfiguration, syncSettings, runLibrarySync, scheduleLibrarySync, relevantLibraryChange, SYNC_CONFIG_KEY, SYNC_STATUS_KEY, SYNC_FORMAT, SYNC_PATH } from '../src/features/github/github-sync.js';
 
 function storageFor(database = createEmptyDatabase()) {
   const data = { [APP_STORAGE_KEY]: structuredClone(database) };
@@ -243,7 +243,7 @@ test('storage object key ordering does not create conflicts or prevent ordinary 
 });
 
 test('private to normal deliberate release assigns a new ID so old withdrawal stays immutable', async () => {
-  const { moveAigcAsset } = await import('../store.js');
+  const { moveAigcAsset } = await import('../src/core/store.js');
   let database = createEmptyDatabase(); database.assets = [asset('a', 'image', 'aigc')];
   database = moveAigcAsset(database, 'a', 'private', 11);
   assert.equal(database.assets[0].id, 'a');
@@ -307,7 +307,7 @@ test('snapshot limits, read-only database and organization repositories fail clo
 });
 
 test('privacy withdrawal survives deleting private asset or releasing it with new ID before the next sync', async () => {
-  const { moveAigcAsset, removeAsset, createBackup } = await import('../store.js');
+  const { moveAigcAsset, removeAsset, createBackup } = await import('../src/core/store.js');
   for (const releaseToNormal of [false, true]) {
     const db = createEmptyDatabase(); db.assets = [asset('a', 'ordinary', 'aigc')];
     const storage = await configured(db); const server = api();
@@ -331,4 +331,22 @@ test('privacy withdrawal survives deleting private asset or releasing it with ne
   const db = createEmptyDatabase(); db.assets = [asset('a', 'ordinary', 'aigc')];
   const saved = saveAsset(db, { ...db.assets[0], privacy: 'private' });
   assert.deepEqual(saved.database.syncWithdrawals, ['a']);
+});
+
+test('applied AI structure proposals remain valid and sync with their provenance preserved', async () => {
+  let db = createEmptyDatabase();
+  db = createCategory(db, 'generic', 'old', { id: 'old' }).database;
+  db = saveAsset(db, { type: 'generic', content: 'hello', categoryId: 'old' }, { id: 'a', now: 10 }).database;
+  db = addStructureProposal(db, { scope: 'generic', groups: [{ from: ['old'], to: 'new' }] });
+  db = resolveStructureProposal(db, db.ai.proposals[0].id, 'apply');
+  const records = await libraryRecords(db);
+  validateSyncDocument(doc(records));
+  assert.equal(records['asset:a'].value.categorySource, 'proposal');
+  const category = Object.values(records).find((record) => record.value?.name === 'new');
+  assert.equal(category.value.createdBy, 'proposal');
+  const storage = await configured(db);
+  const server = api();
+  await runLibrarySync({ storage, fetchImpl: server.fetchImpl });
+  assert.equal(server.records['asset:a'].value.categorySource, 'proposal');
+  assert.equal((await loadDatabase(storage)).categories.find((item) => item.id === category.value.id).createdBy, 'proposal');
 });

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { checkGitHubSkillUpdate, collectGitHubSkill, filterSkillPackageBlobs, githubSkillUrlError, inspectGitHubSkillUrl, isCommitSha, isSkillMarkdownPath, mapGitHubHttpError, skillCollectionPrefix, skillContextFromPage, validateGitHubSkillContext } from '../github-skill.js';
-import { FILE_LIMIT_BYTES, PACKAGE_LIMIT_BYTES, assertPackageLimits } from '../package-store.js';
+import { checkGitHubSkillUpdate, collectGitHubSkill, filterSkillPackageBlobs, githubSkillUrlError, inspectGitHubSkillUrl, isCommitSha, isSkillMarkdownPath, mapGitHubHttpError, skillCollectionPrefix, skillContextFromPage, validateGitHubSkillContext } from '../src/features/github/github-skill.js';
+import { FILE_LIMIT_BYTES, PACKAGE_LIMIT_BYTES, assertPackageLimits } from '../src/platform/package-store.js';
 
 function response(payload, status = 200) { return { ok: status >= 200 && status < 300, status, json: async () => payload }; }
 const encodedSkill = Buffer.from('---\nname: Test skill\ndescription: Test package\n---\n\nHello').toString('base64');

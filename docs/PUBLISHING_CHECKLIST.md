@@ -2,6 +2,8 @@
 
 ## 已准备
 
+当前开发版本为 `0.3.0`。发布包从本次源码生成时，必须保留根目录 `manifest.json` 及完整 `src/`、`icons/`、`vendor/` 层级；`vendor/` 中的依赖许可证也应包含在内。以下旧包仅作历史记录，不代表当前代码：
+
 - `release/FutureContext-0.1.0-edge.zip`：仅包含扩展运行所需文件，且 `manifest.json` 位于 ZIP 根目录。（旧包，对应 0.1.0 代码）
 - `release/FutureContext-0.2.0-chrome.zip`：当前 0.2.0 代码的完整运行包（11 个文件，含 `background.js`、`ai-organizer.js`、`github-skill.js`、`package-store.js`），`manifest.json` 位于 ZIP 根目录，条目路径为正斜杠。Chrome Web Store 与 Edge Add-ons 均可使用此包；Edge 侧上传前可改名为对应版本号。
 - `docs/STORE_LISTING.md`：中英文商店介绍、搜索词和截图建议。

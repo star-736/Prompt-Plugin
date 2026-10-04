@@ -1,5 +1,5 @@
-import { marked } from './vendor/marked.js';
-import createDOMPurify from './vendor/dompurify.js';
+import { marked } from '../../../vendor/marked.js';
+import createDOMPurify from '../../../vendor/dompurify.js';
 
 export function skillBody(content) {
   return String(content ?? '').replace(/^\uFEFF?---\s*\r?\n[\s\S]*?\r?\n---\s*(?:\r?\n|$)/, '');

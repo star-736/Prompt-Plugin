@@ -1,3 +1,5 @@
+import { EXTENSION_PATHS } from '../platform/extension-paths.js';
+
 // 就地取用的站点配置：只有用户明确启用的站点才会加载取用面板。
 export const SITE_PRESETS = Object.freeze([
   { label: 'ChatGPT', origin: 'https://chatgpt.com' },
@@ -9,7 +11,7 @@ export const SITE_PRESETS = Object.freeze([
 ]);
 
 export const PALETTE_SCRIPT_ID = 'futurecontext-palette';
-export const PALETTE_SCRIPT_FILE = 'content-palette.js';
+export const PALETTE_SCRIPT_FILE = EXTENSION_PATHS.palette;
 export const SHORTCUT_LABEL = 'Alt+Shift+F';
 
 /** 整域算同一产品的根域名；不含 google.com / microsoft.com。 */

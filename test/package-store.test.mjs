@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { assertPackageLimits, buildPackageFileTree, deletePackage, exportPackages, FILE_LIMIT_BYTES, getPackage, importPackages, isTextFile, PACKAGE_LIMIT_BYTES, putPackage } from '../package-store.js';
+import { assertPackageLimits, buildPackageFileTree, deletePackage, exportPackages, FILE_LIMIT_BYTES, getPackage, importPackages, isTextFile, PACKAGE_LIMIT_BYTES, putPackage } from '../src/platform/package-store.js';
 import { createMemoryIndexedDB } from './helpers.mjs';
 
 test('isTextFile recognizes markdown, scripts, and JSON content types', () => {

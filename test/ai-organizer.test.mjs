@@ -10,7 +10,7 @@ import {
   parseAssetResult,
   parseGroups,
   providerOrigin
-} from '../ai-organizer.js';
+} from '../src/features/ai/ai-organizer.js';
 
 test('normalizeProvider fills presets and rejects unsafe URLs', () => {
   const openai = normalizeProvider({ kind: 'openai', model: 'gpt-4.1-mini' });
@@ -53,4 +53,41 @@ test('chatCompletion rejects empty or failed provider responses', async () => {
   await assert.rejects(() => chatCompletion(provider, 'sk', 'p', async () => ({ ok: false, status: 500, json: async () => ({}) })), /500/);
   await assert.rejects(() => chatCompletion(provider, 'sk', 'p', async () => ({ ok: true, status: 200, json: async () => ({ choices: [] }) })), /未返回/);
   assert.throws(() => parseAssetResult('not-json'), /JSON/);
+});
+
+test('chatCompletion cancels a stalled request with its AbortSignal', async () => {
+  const provider = normalizeProvider({ kind: 'openai', model: 'test' });
+  let signal;
+  const fetchImpl = async (_url, options) => {
+    signal = options.signal;
+    return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true }));
+  };
+  await assert.rejects(chatCompletion(provider, 'sk', 'prompt', fetchImpl, { timeoutMs: 10 }), /超时/);
+  assert.equal(signal.aborted, true);
+});
+
+test('chatCompletion shares one abort deadline across JSON fallback and body reading', async () => {
+  const provider = normalizeProvider({ kind: 'openai', model: 'test' });
+  const signals = [];
+  const fetchImpl = async (_url, options) => {
+    signals.push(options.signal);
+    if (signals.length === 1) return { ok: false, status: 422 };
+    return { ok: true, status: 200, json: () => new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => reject(new Error('body aborted')), { once: true })) };
+  };
+  await assert.rejects(chatCompletion(provider, 'sk', 'prompt', fetchImpl, { timeoutMs: 10 }), /超时/);
+  assert.equal(signals.length, 2);
+  assert.equal(signals[0], signals[1]);
+  assert.equal(signals[1].aborted, true);
+});
+
+test('chatCompletion clears its deadline after a successful response', async () => {
+  const provider = normalizeProvider({ kind: 'openai', model: 'test' });
+  let signal;
+  const fetchImpl = async (_url, options) => {
+    signal = options.signal;
+    return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '{"ok":true}' } }] }) };
+  };
+  assert.deepEqual(await chatCompletion(provider, 'sk', 'prompt', fetchImpl, { timeoutMs: 10 }), { ok: true });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(signal.aborted, false);
 });

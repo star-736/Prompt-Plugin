@@ -1,5 +1,5 @@
-import { applyDatabaseChange, loadDatabase, isReadOnlyDatabase, CATEGORY_SCOPES, ASSET_TYPES, parseSkillMetadata, withDatabaseWriteLock } from './store.js';
-import { getPackage, putPackage, assertPackageLimits } from './package-store.js';
+import { applyDatabaseChange, loadDatabase, isReadOnlyDatabase, CATEGORY_SCOPES, ASSET_TYPES, parseSkillMetadata, withDatabaseWriteLock } from '../../core/store.js';
+import { getPackage, putPackage, assertPackageLimits } from '../../platform/package-store.js';
 import { restrictLocalStorage } from './github-auth.js';
 
 export const SYNC_CONFIG_KEY = 'futurecontext.github-sync';
@@ -52,13 +52,14 @@ export function validateSyncDocument(input) {
     const v = record.value;
     if (!validId(v.id) || v.id !== match[2]) invalid();
     if (match[1] === 'category') {
-      if (v.createdBy !== undefined && !['human', 'ai'].includes(v.createdBy)) invalid();
+      if (v.createdBy !== undefined && !['human', 'ai', 'proposal'].includes(v.createdBy)) invalid();
       if (!keys(v, CATEGORY_FIELDS) || !CATEGORY_SCOPES.includes(v.scope) || !string(v.name, 40) || !v.name.trim()) invalid();
     } else {
       if (!keys(v, [...ASSET_FIELDS, 'package']) || !ASSET_TYPES.includes(v.type) || v.privacy !== 'normal' || !string(v.title, 100000) || !string(v.content) || !v.content.trim() || (v.categoryId != null && !validId(v.categoryId))) invalid();
       for (const field of ['createdAt', 'updatedAt']) if (!Number.isFinite(v[field]) || v[field] < 0) invalid();
       if (v.skillDescription != null && !string(v.skillDescription, 100000)) invalid();
-      for (const field of ['titleSource', 'categorySource']) if (v[field] != null && !['manual', 'none', 'ai'].includes(v[field])) invalid();
+      if (v.titleSource != null && !['manual', 'none', 'ai'].includes(v.titleSource)) invalid();
+      if (v.categorySource != null && !['manual', 'none', 'ai', 'proposal'].includes(v.categorySource)) invalid();
       if (v.pinned !== undefined && typeof v.pinned !== 'boolean') invalid();
       if (v.type === 'skill') { try { parseSkillMetadata(v.content); } catch { invalid(); } }
       if (v.package) {

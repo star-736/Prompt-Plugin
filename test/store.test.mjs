@@ -40,6 +40,7 @@ import {
   parseBackup,
   parseSkillMetadata,
   READ_ONLY_MESSAGE,
+  SAVE_CONFLICT_MESSAGE,
   recordAssetUse,
   removeAsset,
   removeAssetAndPackage,
@@ -63,7 +64,7 @@ import {
   usageSummary,
   validateAsset,
   verifyPrivacyPassword
-} from '../store.js';
+} from '../src/core/store.js';
 
 const skill = `---\nname: Email reviewer\ndescription: Review email drafts\n---\n\n# Instructions\nReview the email.`;
 
@@ -417,8 +418,8 @@ test('writable GitHub update deletes the old package only after a successful sav
 test('GitHub update keeps the old package when saveDatabase returns false', async () => {
   const tracker = trackPackages();
   tracker.persist = async () => { tracker.calls.push('save'); return false; };
-  await assert.rejects(() => commitGithubSkillPackage(githubSkillDatabase(), githubPackage('new-pkg', 'new-commit'), { updateAssetId: 'skill-1', ...tracker }), { message: READ_ONLY_MESSAGE });
-  assert.deepEqual(tracker.calls, ['put:new-pkg', 'save']);
+  await assert.rejects(() => commitGithubSkillPackage(githubSkillDatabase(), githubPackage('new-pkg', 'new-commit'), { updateAssetId: 'skill-1', ...tracker }), { message: SAVE_CONFLICT_MESSAGE });
+  assert.deepEqual(tracker.calls, ['put:new-pkg', 'save', 'delete:new-pkg']);
 });
 
 test('read-only delete does not remove the skill package', async () => {
@@ -438,7 +439,7 @@ test('writable delete removes the skill package only after a successful save', a
 test('delete keeps the skill package when saveDatabase returns false', async () => {
   const tracker = trackPackages();
   tracker.persist = async () => { tracker.calls.push('save'); return false; };
-  await assert.rejects(() => removeAssetAndPackage(githubSkillDatabase(), 'skill-1', tracker), { message: READ_ONLY_MESSAGE });
+  await assert.rejects(() => removeAssetAndPackage(githubSkillDatabase(), 'skill-1', tracker), { message: SAVE_CONFLICT_MESSAGE });
   assert.deepEqual(tracker.calls, ['save']);
 });
 
@@ -653,12 +654,13 @@ test('AI apply, grouping, palette content match, and backup parse cover leftover
   assert.throws(() => captureSelection(database, 'x'.repeat(100001)), /超过/);
 });
 
-test('GitHub collect duplicate deletes the newly put package', async () => {
+test('GitHub collect duplicate does not write or delete packages', async () => {
   const tracker = trackPackages();
   const first = await commitGithubSkillPackage(createEmptyDatabase(), githubPackage('pkg-1', 'old-commit'), tracker);
+  tracker.calls.length = 0;
   const duplicate = await commitGithubSkillPackage(first.database, githubPackage('pkg-2', 'old-commit'), tracker);
   assert.equal(duplicate.duplicate, true);
-  assert.ok(tracker.calls.includes('delete:pkg-2'));
+  assert.deepEqual(tracker.calls, []);
 });
 
 test('removeAssetAndPackage without a package only persists', async () => {
@@ -765,7 +767,7 @@ test('simultaneous snapshot saves reject the stale writer instead of both succee
 });
 
 test('independent store modules share the browser lock across storage wrappers', async () => {
-  const otherStore = await loadFreshEntry('../store.js');
+  const otherStore = await loadFreshEntry('../src/platform/database-storage.js');
   const storage = memoryStorage();
   const otherStorage = { get: storage.get.bind(storage), set: storage.set.bind(storage) };
   let tail = Promise.resolve();
@@ -884,4 +886,149 @@ test('importBackupRecords rejects oversized packages before writing', async () =
   const tracker = trackPackages();
   await assert.rejects(() => importBackupRecords(createEmptyDatabase(), backup, tracker), /大小限制/);
   assert.deepEqual(tracker.calls, []);
+});
+
+test('category proposals keep an existing destination when it is also a source', () => {
+  let database = createCategory(createEmptyDatabase(), 'generic', '工作', { id: 'work' }).database;
+  database = createCategory(database, 'generic', '邮件', { id: 'email' }).database;
+  database = saveAsset(database, { type: 'generic', content: 'reply', categoryId: 'email' }, { id: 'g1' }).database;
+  database = addStructureProposal(database, { scope: 'generic', groups: [{ from: ['工作', '邮件'], to: '工作' }] });
+  const applied = resolveStructureProposal(database, database.ai.proposals[0].id, 'apply');
+  assert.deepEqual(applied.categories.map((category) => category.id), ['work']);
+  assert.equal(applied.assets[0].categoryId, 'work');
+  const unchanged = addStructureProposal(applied, { scope: 'generic', groups: [{ from: ['工作'], to: '工作' }] });
+  assert.deepEqual(resolveStructureProposal(unchanged, unchanged.ai.proposals[0].id, 'apply').categories, applied.categories);
+});
+
+test('GitHub update applies to the latest library after a concurrent edit', async () => {
+  const storage = memoryStorage();
+  await saveDatabase(githubSkillDatabase(), storage);
+  const stale = await loadDatabase(storage);
+  await applyDatabaseChange((latest) => {
+    const categorized = createCategory(latest, 'skill', '工作', { id: 'work' }).database;
+    const withCategory = setAssetCategory(categorized, 'skill-1', 'work');
+    return saveAsset(withCategory, { type: 'generic', content: 'concurrent' }, { id: 'parallel' });
+  }, storage);
+  const tracker = trackPackages();
+  const saved = await commitGithubSkillPackage(stale, githubPackage('new-pkg', 'new-commit'), {
+    updateAssetId: 'skill-1', storage, putPackage: tracker.putPackage, deletePackage: tracker.deletePackage
+  });
+  const persisted = await loadDatabase(storage);
+  assert.deepEqual(saved.database, persisted);
+  assert.equal(persisted.assets.find((asset) => asset.id === 'parallel').content, 'concurrent');
+  assert.equal(saved.asset.categoryId, 'work');
+  assert.equal(saved.asset.skillPackage.source.commit, 'new-commit');
+  assert.deepEqual(tracker.calls, ['put:new-pkg', 'delete:old-pkg']);
+});
+
+test('GitHub commit rolls back its new package when storage throws', async () => {
+  const storage = memoryStorage();
+  await saveDatabase(githubSkillDatabase(), storage);
+  storage.set = async () => { throw new Error('disk full'); };
+  const tracker = trackPackages();
+  await assert.rejects(commitGithubSkillPackage(await loadDatabase(storage), githubPackage('new-pkg', 'new-commit'), {
+    updateAssetId: 'skill-1', storage, putPackage: tracker.putPackage, deletePackage: tracker.deletePackage
+  }), /disk full/);
+  assert.deepEqual(tracker.calls, ['put:new-pkg', 'delete:new-pkg']);
+  assert.equal((await loadDatabase(storage)).assets[0].skillPackage.packageId, 'old-pkg');
+});
+
+test('GitHub commit refuses the latest read-only library before writing files', async () => {
+  const storage = memoryStorage();
+  storage.stored[APP_STORAGE_KEY] = { ...githubSkillDatabase(), version: 3 };
+  const tracker = trackPackages();
+  await assert.rejects(commitGithubSkillPackage(githubSkillDatabase(), githubPackage('new-pkg', 'new-commit'), {
+    updateAssetId: 'skill-1', storage, putPackage: tracker.putPackage, deletePackage: tracker.deletePackage
+  }), { message: READ_ONLY_MESSAGE });
+  assert.deepEqual(tracker.calls, []);
+});
+
+test('GitHub commit never overwrites or deletes a referenced package id', async () => {
+  const tracker = trackPackages();
+  await assert.rejects(commitGithubSkillPackage(githubSkillDatabase(), githubPackage('old-pkg', 'new-commit'), {
+    updateAssetId: 'skill-1', ...tracker
+  }), /ID 已被资料库引用/);
+  assert.deepEqual(tracker.calls, []);
+  const duplicate = await commitGithubSkillPackage(githubSkillDatabase(), githubPackage('old-pkg', 'old-commit'), tracker);
+  assert.equal(duplicate.duplicate, true);
+  assert.deepEqual(tracker.calls, []);
+});
+
+test('delete reads the latest package reference and returns the acknowledged library', async () => {
+  const storage = memoryStorage();
+  await saveDatabase(githubSkillDatabase(), storage);
+  const stale = await loadDatabase(storage);
+  await applyDatabaseChange((latest) => {
+    const updated = saveGithubSkillAsset(latest, githubPackage('concurrent-pkg', 'new-commit'), { updateAssetId: 'skill-1' });
+    return saveAsset(updated.database, { type: 'generic', content: 'keep me' }, { id: 'parallel' });
+  }, storage);
+  const tracker = trackPackages();
+  const result = await removeAssetAndPackage(stale, 'skill-1', { storage, deletePackage: tracker.deletePackage });
+  assert.deepEqual(result, await loadDatabase(storage));
+  assert.deepEqual(result.assets.map((asset) => asset.id), ['parallel']);
+  assert.deepEqual(tracker.calls, ['delete:concurrent-pkg']);
+});
+
+test('package cleanup failure does not turn an acknowledged commit into a failure', async () => {
+  const tracker = trackPackages();
+  tracker.deletePackage = async () => { throw new Error('cleanup failed'); };
+  const saved = await commitGithubSkillPackage(githubSkillDatabase(), githubPackage('new-pkg', 'new-commit'), { updateAssetId: 'skill-1', ...tracker });
+  assert.equal(saved.asset.skillPackage.packageId, 'new-pkg');
+  const next = await removeAssetAndPackage(saved.database, 'skill-1', tracker);
+  assert.equal(next.assets.length, 0);
+});
+
+test('backup import returns its acknowledged snapshot without a read after commit', async () => {
+  const storage = memoryStorage();
+  let committed = false;
+  let reads = 0;
+  const get = storage.get;
+  const set = storage.set;
+  storage.get = async (key) => {
+    assert.equal(committed, false, 'successful import performed another storage read');
+    reads += 1;
+    return get(key);
+  };
+  storage.set = async (value) => { await set(value); committed = true; };
+  const source = githubSkillDatabase('pkg-src');
+  const backup = createBackup(source, 9, [{ id: 'pkg-src', files: [{ path: 'SKILL.md', size: 20, content: 'eA==' }] }]);
+  const tracker = trackPackages();
+  const result = await importBackupRecords(createEmptyDatabase(), backup, {
+    storage, putPackage: tracker.putPackage, deletePackage: tracker.deletePackage
+  });
+  assert.deepEqual(result.database, storage.stored[APP_STORAGE_KEY]);
+  assert.equal(result.database.revision, 1);
+  assert.equal(result.imported, 1);
+  assert.equal(reads, 2);
+  assert.equal(tracker.calls.length, 1);
+});
+
+test('GitHub commit retries without rewriting files or deleting a newly referenced package', async () => {
+  const storage = memoryStorage();
+  await saveDatabase(githubSkillDatabase(), storage);
+  const stale = await loadDatabase(storage);
+  const tracker = trackPackages();
+  const incoming = githubPackage('new-pkg', 'new-commit');
+  const result = await commitGithubSkillPackage(stale, incoming, {
+    updateAssetId: 'skill-1', storage, deletePackage: tracker.deletePackage,
+    putPackage: async (record) => {
+      await tracker.putPackage(record);
+      // Simulate a writer outside the lock protocol. The next revision check
+      // must retry, see the duplicate, and leave its now-referenced files intact.
+      const committed = saveGithubSkillAsset(storage.stored[APP_STORAGE_KEY], incoming, { updateAssetId: 'skill-1' }).database;
+      storage.stored[APP_STORAGE_KEY] = { ...committed, revision: storage.stored[APP_STORAGE_KEY].revision + 1 };
+    }
+  });
+  assert.equal(result.duplicate, true);
+  assert.deepEqual(result.database, storage.stored[APP_STORAGE_KEY]);
+  assert.deepEqual(tracker.calls, ['put:new-pkg']);
+});
+
+test('deleting one asset preserves a package still referenced by another asset', async () => {
+  const database = githubSkillDatabase();
+  database.assets.push({ ...database.assets[0], id: 'second-copy' });
+  const tracker = trackPackages();
+  const result = await removeAssetAndPackage(database, 'skill-1', tracker);
+  assert.deepEqual(result.assets.map((asset) => asset.id), ['second-copy']);
+  assert.deepEqual(tracker.calls, ['save']);
 });

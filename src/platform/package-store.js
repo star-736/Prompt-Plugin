@@ -1,36 +1,12 @@
-const DATABASE_NAME = 'futurecontext.packages';
-const DATABASE_VERSION = 1;
-const STORE_NAME = 'packages';
+import { createIndexedDbStore } from './indexeddb.js';
 
-function openDatabase(indexedDb = globalThis.indexedDB) {
-  return new Promise((resolve, reject) => {
-    const request = indexedDb.open(DATABASE_NAME, DATABASE_VERSION);
-    request.onupgradeneeded = () => {
-      if (!request.result.objectStoreNames.contains(STORE_NAME)) request.result.createObjectStore(STORE_NAME, { keyPath: 'id' });
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error('无法打开本地 Skill 文件库。'));
-  });
-}
-
-function transact(mode, callback, indexedDb) {
-  return openDatabase(indexedDb).then((database) => new Promise((resolve, reject) => {
-    const transaction = database.transaction(STORE_NAME, mode);
-    const store = transaction.objectStore(STORE_NAME);
-    let output;
-    transaction.oncomplete = () => { database.close(); Promise.resolve(output).then(resolve, reject); };
-    transaction.onerror = () => { database.close(); reject(transaction.error ?? new Error('无法更新本地 Skill 文件库。')); };
-    transaction.onabort = () => { database.close(); reject(transaction.error ?? new Error('本地 Skill 文件库操作已取消。')); };
-    output = callback(store);
-  }));
-}
-
-function requestValue(request) {
-  return new Promise((resolve, reject) => {
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error('本地 Skill 文件库读取失败。'));
-  });
-}
+const { transact, requestValue } = createIndexedDbStore({
+  databaseName: 'futurecontext.packages', storeName: 'packages',
+  messages: {
+    open: '无法打开本地 Skill 文件库。', write: '无法更新本地 Skill 文件库。',
+    abort: '本地 Skill 文件库操作已取消。', read: '本地 Skill 文件库读取失败。'
+  }
+});
 
 export async function putPackage(packageRecord, indexedDb = globalThis.indexedDB) {
   const value = structuredClone(packageRecord);

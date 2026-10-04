@@ -10,8 +10,8 @@ import {
   appendGitHubFetchLog,
   GITHUB_FETCH_LOG_KEY,
   GITHUB_FETCH_LOG_LIMIT
-} from '../github-auth.js';
-import { createBackup, createEmptyDatabase } from '../store.js';
+} from '../src/features/github/github-auth.js';
+import { createBackup, createEmptyDatabase } from '../src/core/store.js';
 
 function storage() {
   const data = {};

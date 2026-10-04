@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SourceTextModule, SyntheticModule } from 'node:vm';
 import { JSDOM } from 'jsdom';
-import { APP_STORAGE_KEY, createEmptyDatabase, normalizeDatabase } from '../store.js';
+import { APP_STORAGE_KEY, createEmptyDatabase, normalizeDatabase } from '../src/core/store.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -358,11 +358,11 @@ export function installDom(html, { url = 'https://chatgpt.com/' } = {}) {
 }
 
 export function popupHtml() {
-  return readFileSync(join(root, 'popup.html'), 'utf8');
+  return readFileSync(join(root, 'src/ui/popup/popup.html'), 'utf8');
 }
 
 export function deliverHtml() {
-  return readFileSync(join(root, 'deliver.html'), 'utf8');
+  return readFileSync(join(root, 'src/ui/deliver/deliver.html'), 'utf8');
 }
 
 export function click(selectorOrElement) {

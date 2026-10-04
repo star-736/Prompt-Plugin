@@ -20,7 +20,7 @@ stub = createChromeStub({
   }
 });
 
-await loadFreshEntry('../content-palette.js');
+await loadFreshEntry('../src/content/content-palette.js');
 await waitFor(() => window.__futureContextPalette?.openFromShortcut);
 });
 afterEach(() => { window.__futureContextPalette?.destroy(); window.close(); });
@@ -216,4 +216,53 @@ test('failed background query retries twice and leaves the input unchanged', asy
   assert.equal(el.value, 'draft');
   assert.equal(clipboard(), '');
   assert.equal(paletteShadow().querySelectorAll('.fc-item').length, 0);
+});
+
+test('standalone insertion restores the original textarea selection after searching', async () => {
+  const el = field();
+  el.value = 'hello world';
+  el.setSelectionRange(6, 11);
+  assert.equal(window.__futureContextPalette.openFromShortcut(), true);
+  await waitFor(() => paletteShadow()?.querySelector('.fc-item'));
+  const search = paletteShadow().querySelector('.fc-search');
+  search.value = '周报';
+  dispatchTrusted(search, new window.Event('input', { bubbles: true }));
+  await waitFor(() => paletteShadow().querySelectorAll('.fc-item').length === 1);
+  el.setSelectionRange(0, 0);
+  dispatchTrusted(window, new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+  await waitFor(() => el.value === 'hello 写一封邮件');
+  assert.equal(el.selectionStart, el.value.length);
+  assert.equal(el.selectionEnd, el.value.length);
+});
+
+test('standalone insertion restores the saved contenteditable range before writing', async () => {
+  const ed = document.createElement('div');
+  ed.setAttribute('contenteditable', 'true');
+  ed.textContent = 'hello world';
+  document.body.appendChild(ed);
+  ed.focus();
+  const range = document.createRange();
+  range.setStart(ed.firstChild, 6);
+  range.setEnd(ed.firstChild, 11);
+  const selection = window.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+  assert.equal(window.__futureContextPalette.openFromShortcut(), true);
+  await waitFor(() => paletteShadow()?.querySelector('.fc-item'));
+  const changed = document.createRange();
+  changed.setStart(ed.firstChild, 0);
+  changed.collapse(true);
+  selection.removeAllRanges();
+  selection.addRange(changed);
+  let observed;
+  document.execCommand = (_command, _ui, content) => {
+    const active = selection.getRangeAt(0);
+    observed = active.toString();
+    active.deleteContents();
+    active.insertNode(document.createTextNode(content));
+    return true;
+  };
+  dispatchTrusted(window, new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+  await waitFor(() => ed.textContent === 'hello 写一封邮件');
+  assert.equal(observed, 'world');
 });

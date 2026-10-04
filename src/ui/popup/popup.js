@@ -1,3 +1,5 @@
+import { createAssetEditor } from './asset-editor.js';
+import { EXTENSION_PATHS } from '../../platform/extension-paths.js';
 import {
   APP_STORAGE_KEY,
   applyDatabaseChange,
@@ -7,13 +9,11 @@ import {
   createBackup,
   createCategory,
   deleteCategory,
-  discardDraft,
   disableSite,
   displayTitle,
   enableSite,
   exportRequiresUnlock,
   formatSkillInsert,
-  getDraft,
   hasPrivacyLock,
   ignoreSite,
   importBackupRecords,
@@ -23,12 +23,9 @@ import {
   normalizeDatabase,
   READ_ONLY_MESSAGE,
   recordAssetUse,
-  removeAsset,
   removeAssetAndPackage,
   resolveStructureProposal,
   renameCategory,
-  saveAsset,
-  saveDraft,
   setAssetCategory,
   setAssetPinned,
   setLastNormalTab,
@@ -38,23 +35,24 @@ import {
   updateAiSettings,
   updateInPlaceSettings,
   updateStructureProposal,
-  removeProviderConfig,
   scopeFor,
   setPrivacyPassword,
   applyDiskDeliveries,
   usageSummary,
   verifyPrivacyPassword
-} from './store.js';
-import { PROVIDER_PRESETS, providerOrigin } from './ai-organizer.js';
-import { githubToken, saveGitHubToken } from './github-auth.js';
-import { buildPackageFileTree, deletePackage, exportPackages, getPackage, putPackage, isTextFile } from './package-store.js';
-import { githubSkillUrlError, inspectGitHubSkillUrl } from './github-skill.js';
-import { isPromptableSite, isRestrictedTabUrl, normalizeSiteOrigin, originCoveredBySites, originOfUrl, PALETTE_SCRIPT_FILE, patternsForSites, relatedMatchPatterns, SHORTCUT_LABEL, SITE_PRESETS, siteHost } from './in-place.js';
-import { AGENT_TARGETS, agentFolderBindGuide, agentPathHint, deliveryActionPlan, deliveryRecord, deliveryStateLabel, deliverySummary, resolveDeliveryStatus, usesSharedAgentsDirectory } from './agent-deliver.js';
-import { getBinding, listBindings } from './agent-folders.js';
-import { canReadHandle, indexSkillDirectories, resolveSkillsDirectory, scanSkillPresence } from './agent-fs.js';
-import { runDeliverAction } from './deliver.js';
-import { renderSkillMarkdown, skillBody } from './skill-reader.js';
+} from '../../core/store.js';
+import { PROVIDER_PRESETS, providerOrigin } from '../../features/ai/ai-organizer.js';
+import { githubToken, saveGitHubToken } from '../../features/github/github-auth.js';
+import { buildPackageFileTree, deletePackage, exportPackages, getPackage, putPackage, isTextFile } from '../../platform/package-store.js';
+import { githubSkillUrlError, inspectGitHubSkillUrl } from '../../features/github/github-skill.js';
+import { isPromptableSite, isRestrictedTabUrl, normalizeSiteOrigin, originCoveredBySites, originOfUrl, PALETTE_SCRIPT_FILE, patternsForSites, relatedMatchPatterns, SHORTCUT_LABEL, SITE_PRESETS, siteHost } from '../../content/in-place.js';
+import { AGENT_TARGETS, agentFolderBindGuide, agentPathHint, deliveryActionPlan, deliveryRecord, deliveryStateLabel, deliverySummary, resolveDeliveryStatus, usesSharedAgentsDirectory } from '../../features/agents/agent-deliver.js';
+import { getBinding, listBindings } from '../../features/agents/agent-folders.js';
+import { canReadHandle, indexSkillDirectories, resolveSkillsDirectory, scanSkillPresence } from '../../features/agents/agent-fs.js';
+import { runDeliverAction } from '../../features/agents/delivery-service.js';
+import { createSkillWorkspace } from './skill-workspace.js';
+import { escapeHtml, folderIcon } from '../markup.js';
+import { decodePackageText } from './package-text.js';
 
 const app = document.querySelector('#app');
 const toast = document.querySelector('#toast');
@@ -65,13 +63,6 @@ const confirmDescription = document.querySelector('#confirm-description');
 const confirmAction = document.querySelector('#confirm-action');
 const pageParams = new URLSearchParams(window.location.search);
 const standaloneTab = pageParams.get('mode') === 'tab';
-let readerAssetId = pageParams.get('asset');
-let readerPath = 'SKILL.md';
-let readerPackage = null;
-let readerPackageKey = null;
-let readerPackageError = false;
-let readerFilesOpen = window.innerWidth >= 1100;
-let readerFolderOpen = new Map();
 if (standaloneTab) {
   document.documentElement.classList.remove('toolbar-popup');
   document.querySelector('[data-action="open-tab"]').hidden = true;
@@ -137,7 +128,6 @@ const state = {
   tabId: null,
   tabUrl: '',
   tabOrigin: null,
-  editor: null,
   manageScope: null,
   categoryEditId: null,
   lockReturn: null,
@@ -152,12 +142,24 @@ const state = {
   deliveryAccess: {}
 };
 
+const reader = createSkillWorkspace({
+  selectedId: pageParams.get('asset'),
+  onChange: () => { if (state.view === 'library' && state.activeTab === 'skill') render(); },
+  showToast
+});
+
+const editor = createAssetEditor({
+  getDatabase: () => state.database,
+  commit,
+  onChange: render,
+  onExit: () => { state.view = 'library'; render(); },
+  showConfirm,
+  showToast,
+  scheduleAi: () => sendBackground({ type: 'schedule-ai' })
+});
+
 let toastTimer;
 let confirmCallback = null;
-
-function escapeHtml(value = '') {
-  return String(value).replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[character]);
-}
 
 function lockIcon() {
   return '<svg class="lock-line" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>';
@@ -173,10 +175,6 @@ function searchIcon() {
 
 function chevronIcon() {
   return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>';
-}
-
-function folderIcon() {
-  return '<svg class="package-folder-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 8h6l2 2h10v9H3z"/><path d="M3 8V6h5l2 2"/></svg>';
 }
 
 function isPrivateView() {
@@ -414,75 +412,7 @@ function renderLibrary() {
 
 function renderSkillWorkspace() {
   const assets = assetsFor(state.database, { type: 'skill', privacy: 'normal', query: state.search, categoryId: state.categoryId, sortBy: sortByFor(state.database, 'skill') });
-  if (!assets.length) return renderAssetList();
-  const asset = assets.find((item) => item.id === readerAssetId) ?? assets[0];
-  if (readerAssetId !== asset.id) { readerAssetId = asset.id; readerPath = 'SKILL.md'; readerFilesOpen = window.innerWidth >= 1100; readerFolderOpen.clear(); }
-  const packageId = asset.skillPackage?.packageId;
-  const key = packageId ? `${asset.id}:${packageId}:${asset.updatedAt}` : null;
-  if (key !== readerPackageKey) {
-    readerPackageKey = key;
-    readerPackage = null;
-    readerPackageError = false;
-    if (packageId) void getPackage(packageId).then((record) => {
-      if (readerPackageKey !== key) return;
-      readerPackage = record;
-      readerPackageError = !record;
-      if (state.view === 'library' && state.activeTab === 'skill') render();
-    }).catch(() => {
-      if (readerPackageKey !== key) return;
-      readerPackageError = true;
-      if (state.view === 'library' && state.activeTab === 'skill') render();
-    });
-  }
-  const files = readerPackage?.files ?? [];
-  const file = files.find((item) => item.path === readerPath);
-  const text = readerPath === 'SKILL.md' ? (file ? decodePackageText(file) : asset.content) : file && isTextFile(file.path, file.contentType) ? decodePackageText(file) : null;
-  const markdown = /\.md$/i.test(readerPath);
-  const body = text === null ? '<p class="reader-note">此文件为二进制资源，暂不支持正文预览。</p>' : markdown ? renderSkillMarkdown(readerPath === 'SKILL.md' ? skillBody(text) : text, readerPath) : `<pre><code>${escapeHtml(text)}</code></pre>`;
-  const navigation = assets.map((item) => `<button type="button" class="skill-list-item ${item.id === asset.id ? 'is-selected' : ''}" data-action="read-skill" data-id="${escapeHtml(item.id)}" aria-current="${item.id === asset.id ? 'true' : 'false'}"><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.skillDescription ?? '')}</span><small>${escapeHtml(categoryName(item.categoryId))}</small></button>`).join('');
-  const fileButtons = renderReaderTree(buildPackageFileTree([{ path: 'SKILL.md' }, ...files.filter((item) => item.path !== 'SKILL.md')]));
-  return `<div class="skill-workspace"><aside class="skill-navigation" aria-label="Skill 列表"><div class="skill-list-heading">Skill <span>${assets.length}</span></div>${navigation}<button class="button button-ghost" type="button" data-action="collect-github-skill">从当前 GitHub 页面收集</button></aside><div class="reader-layout"><section class="skill-reader" aria-label="Skill 阅读区"><header class="reader-header"><div class="reader-eyebrow">SKILL / ${escapeHtml(categoryName(asset.categoryId))}</div><h1>${escapeHtml(asset.title)}</h1><p class="reader-description">${escapeHtml(asset.skillDescription ?? '')}</p><div class="section-actions"><button class="button button-primary" type="button" data-action="copy-asset" data-id="${escapeHtml(asset.id)}">复制 SKILL.md</button><button class="button button-ghost" type="button" data-action="manage-reader-skill" data-id="${escapeHtml(asset.id)}">${packageId ? '管理 Skill' : '编辑 Skill'}</button><button class="button button-ghost" type="button" data-action="toggle-pin" data-id="${escapeHtml(asset.id)}">${asset.pinned ? '取消置顶' : '置顶'}</button></div></header><div class="reader-file-heading"><span>${escapeHtml(readerPath)}</span>${readerPath !== 'SKILL.md' ? '<button class="inline-action" type="button" data-action="read-skill-file" data-path="SKILL.md">返回 SKILL.md</button>' : ''}</div><article class="skill-markdown">${body}</article></section>${packageId ? `<details class="reader-files" ${readerFilesOpen ? 'open' : ''}><summary>文件目录 · ${asset.skillPackage.fileCount ?? files.length} 个文件</summary><nav aria-label="Skill 文件">${fileButtons}</nav>${readerPackageError ? '<p class="reader-note">辅助文件读取失败，仍可阅读已保存的 SKILL.md。</p>' : !readerPackage ? '<p class="reader-note">正在读取辅助文件…</p>' : ''}</details>` : ''}</div></div>`;
-}
-
-function renderReaderTree(nodes) {
-  return nodes.map((node) => {
-    if (node.type === 'dir') {
-      const open = readerFolderOpen.get(node.path) ?? readerPath.startsWith(`${node.path}/`);
-      return `<details class="reader-folder" data-reader-folder="${escapeHtml(node.path)}" ${open ? 'open' : ''}><summary>${folderIcon()}<span>${escapeHtml(node.name)}</span></summary><div class="reader-tree-children">${renderReaderTree(node.children)}</div></details>`;
-    }
-    return `<button type="button" class="reader-file ${readerPath === node.path ? 'is-selected' : ''}" data-action="read-skill-file" data-path="${escapeHtml(node.path)}" aria-current="${readerPath === node.path ? 'true' : 'false'}" title="${escapeHtml(node.path)}"><span class="reader-file-icon" aria-hidden="true">≡</span><span>${escapeHtml(node.name)}</span></button>`;
-  }).join('');
-}
-
-function readSkillFile(path, hash = '') {
-  if (path !== 'SKILL.md' && !readerPackage?.files.some((file) => file.path === path)) { showToast('该文件不在已保存的 Skill 包中。'); return; }
-  readerFilesOpen = document.querySelector('.reader-files')?.open ?? false;
-  document.querySelectorAll('[data-reader-folder]').forEach((folder) => readerFolderOpen.set(folder.dataset.readerFolder, folder.open));
-  readerPath = path;
-  const parts = path.split('/');
-  for (let i = 1; i < parts.length; i++) readerFolderOpen.set(parts.slice(0, i).join('/'), true);
-  render();
-  if (hash) scrollSkillHeading(hash);
-  else document.querySelector('.reader-file-heading')?.scrollIntoView?.({ block: 'start' });
-}
-
-function scrollSkillHeading(hash) {
-  try { document.getElementById(`skill-heading-${decodeURIComponent(hash)}`)?.scrollIntoView?.({ block: 'start' }); } catch { /* Ignore malformed anchors. */ }
-}
-
-function editorValues() {
-  const form = document.querySelector('#editor-form');
-  if (!form) return state.editor?.values ?? {};
-  return {
-    title: form.querySelector('#editor-title-input')?.value ?? '',
-    content: form.querySelector('#editor-content')?.value ?? '',
-    categoryId: form.querySelector('#editor-category')?.value || null
-  };
-}
-
-function editorChanged(values = editorValues()) {
-  const baseline = state.editor?.baseline ?? { title: '', content: '', categoryId: null };
-  return values.title !== baseline.title || values.content !== baseline.content || (values.categoryId || null) !== (baseline.categoryId || null);
+  return assets.length ? reader.render({ assets, categories: state.database.categories }) : renderAssetList();
 }
 
 function categoryOptions(type, privacy, selectedId, creating = false) {
@@ -493,33 +423,21 @@ function categoryOptions(type, privacy, selectedId, creating = false) {
   </div>`;
 }
 
+function openEditor(asset = null) {
+  editor.open({ asset, type: asset?.type ?? state.activeTab, privacy: asset?.privacy ?? activePrivacy(), categoryId: state.categoryId });
+  state.view = 'editor';
+  render();
+}
+
 function renderEditor() {
-  const { type, privacy, assetId, values } = state.editor;
-  const existing = assetId ? state.database.assets.find((asset) => asset.id === assetId) : null;
-  const isSkill = type === 'skill';
-  const isCommand = type === 'command';
-  const heading = existing ? `编辑${labels[type]}` : `新建${labels[type]}`;
-  const titleField = type === 'generic' ? '<div class="field"><label>标题（可选）<input id="editor-title-input" maxlength="120" value="' + escapeHtml(values.title) + '" /></label></div>' : '';
-  const contentLabel = isSkill ? 'SKILL.md' : isCommand ? '指令' : '内容';
-  const contentHelp = isSkill ? '<p class="form-help">保存时会校验 YAML frontmatter 中的 name 与 description。</p>' : isCommand ? '<p class="form-help">可保存终端命令或浏览器指令，例如 <code>git pull</code>、<code>chrome://restart</code>。</p>' : '';
-  const management = existing?.type === 'aigc' ? `<div class="secondary-management">
-      <button class="button button-ghost button-small" type="button" data-action="move-asset" data-id="${existing.id}" data-target="${existing.privacy === 'private' ? 'normal' : 'private'}">${existing.privacy === 'private' ? '移出私密库' : '移入私密库'}</button>
-      <button class="button button-danger button-small" type="button" data-action="delete-asset" data-id="${existing.id}">永久删除</button>
-    </div>` : existing ? `<div class="secondary-management">${existing.privacy === 'normal' ? `<button class="button button-ghost button-small pin-button ${existing.pinned ? 'is-pinned' : ''}" type="button" data-action="toggle-pin" data-id="${existing.id}">${existing.pinned ? '已置顶' : '置顶'}</button>` : ''}<button class="button button-danger button-small" type="button" data-action="delete-asset" data-id="${existing.id}">永久删除</button></div>` : '';
-  return `${renderReadOnlyBanner()}${pageHeading(heading, 'editor-back')}<form class="editor-form" id="editor-form">
-    ${titleField}
-    ${categoryOptions(type, privacy, values.categoryId, state.editor.categoryCreating)}
-    <div class="field"><label>${contentLabel}<textarea id="editor-content" class="${isSkill ? 'skill-editor' : isCommand ? 'command-editor' : ''}" ${isSkill ? '' : 'required'}>${escapeHtml(values.content)}</textarea></label>${contentHelp}</div>
-    <p class="form-help editor-error" id="editor-error" role="alert" hidden></p>
-    <p class="form-help" id="editor-progress" role="status" hidden></p>
-    <div class="editor-footer">
-      <button class="button button-ghost button-small copy-editor" type="button" data-action="copy-editor">复制</button>
-      <span class="status-line">${existing ? `上次保存 ${new Date(existing.updatedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}` : ''}</span>
-      <button class="button button-primary button-small" type="submit">保存</button>
-    </div>
-    ${management}
-    ${existing?.type === 'skill' ? renderSkillDelivery(existing) : ''}
-  </form>`;
+  const { type, privacy, assetId, values, categoryCreating } = editor.current;
+  const existing = assetId ? assetById(assetId) : null;
+  return editor.render({
+    readOnlyBanner: renderReadOnlyBanner(),
+    heading: pageHeading(`${existing ? '编辑' : '新建'}${labels[type]}`, 'editor-back'),
+    categories: categoryOptions(type, privacy, values.categoryId, categoryCreating),
+    delivery: existing?.type === 'skill' ? renderSkillDelivery(existing) : ''
+  });
 }
 
 function renderDeliveryActions(asset, target, status) {
@@ -666,7 +584,7 @@ async function refreshBindingsAndDisk() {
     refreshAgentFolderSettings();
     return;
   }
-  if (state.view === 'editor' && state.editor) state.editor.values = editorValues();
+  if (state.view === 'editor' && editor.current) editor.capture();
   render();
 }
 
@@ -693,10 +611,6 @@ function renderAiUnlock() {
 function renderProposals() {
   const proposals = state.database.ai.proposals.filter((proposal) => proposal.status === 'pending');
   return `${pageHeading('分类结构建议', 'settings')}<div class="proposal-list">${proposals.map((proposal) => state.proposalEditingId === proposal.id ? `<section class="section-card"><h2>调整分类方案</h2><form id="proposal-form" data-id="${proposal.id}">${(proposal.groups ?? []).map((group, index) => `<div class="proposal-edit-row"><label>现有分类（用 / 分隔）<input name="from-${index}" value="${escapeHtml((group.from ?? []).join(' / '))}" required /></label><label>归纳为<input name="to-${index}" value="${escapeHtml(group.to ?? '')}" required /></label></div>`).join('')}<div class="section-actions"><button class="button button-primary button-small" type="submit">保存并应用</button><button class="button button-ghost button-small" type="button" data-action="cancel-proposal-edit">取消</button></div></form></section>` : `<section class="section-card"><h2>${escapeHtml(proposal.summary || '分类结构建议')}</h2>${(proposal.groups ?? []).map((group) => `<p>${escapeHtml((group.from ?? []).join(' / '))} → ${escapeHtml(group.to ?? '')}</p>`).join('')}<div class="section-actions"><button class="button button-primary button-small" type="button" data-action="apply-proposal" data-id="${proposal.id}">应用方案</button><button class="button button-ghost button-small" type="button" data-action="edit-proposal" data-id="${proposal.id}">调整方案</button><button class="button button-ghost button-small" type="button" data-action="dismiss-proposal" data-id="${proposal.id}">保持现有</button></div></section>`).join('') || '<div class="empty-state compact-empty"><p>暂无分类结构建议</p></div>'}</div>`;
-}
-
-function decodePackageText(file) {
-  try { return decodeURIComponent(Array.from(atob(String(file.content ?? '').replace(/\n/g, '')), (char) => `%${char.charCodeAt(0).toString(16).padStart(2, '0')}`).join('')); } catch { return ''; }
 }
 
 function renderPackageFile(file, label) {
@@ -746,7 +660,7 @@ function render() {
   else if (state.view === 'package-detail') app.innerHTML = renderPackageDetail();
   else if (state.view === 'reset-lock') app.innerHTML = renderReadOnlyBanner() + renderLockReset();
   else app.innerHTML = renderLibrary();
-  if (state.view === 'editor') updateEditorFeedback();
+  if (state.view === 'editor') editor.feedback();
   const navigation = document.querySelector('.skill-navigation');
   if (navigation) navigation.scrollTop = navigationScroll;
   if (viewChanged) {
@@ -775,92 +689,6 @@ function openPrivate() {
 
 function assetById(id) {
   return state.database.assets.find((asset) => asset.id === id);
-}
-
-function openEditor(asset = null) {
-  const type = asset?.type ?? state.activeTab;
-  const privacy = asset?.privacy ?? activePrivacy();
-  const reference = { type, privacy, id: asset?.id ?? null };
-  const draft = getDraft(state.database, reference);
-  const baseline = asset
-    ? { title: asset.type === 'generic' ? asset.title : '', content: asset.content, categoryId: ['generic', 'skill', 'command'].includes(asset.type) ? asset.categoryId : null }
-    : { title: '', content: '', categoryId: ['generic', 'skill', 'command'].includes(type) && privacy !== 'private' ? state.categoryId : null };
-  const values = draft ? { title: draft.title ?? '', content: draft.content ?? '', categoryId: draft.categoryId ?? null } : baseline;
-  state.editor = { type, privacy, assetId: asset?.id ?? null, reference, baseline, values };
-  state.view = 'editor';
-  render();
-}
-
-function updateEditorFeedback() {
-  const editor = state.editor;
-  const form = document.querySelector('#editor-form');
-  if (!editor || !form) return;
-  const error = form.querySelector('#editor-error');
-  error.textContent = editor.error ?? '';
-  error.hidden = !editor.error;
-  const progress = form.querySelector('#editor-progress');
-  progress.textContent = editor.slowSave ? '保存仍在进行，结果尚未确认。请保持窗口打开，完成后会更新状态。' : '正在保存，请稍候…';
-  const busy = Boolean(editor.saving || editor.closing);
-  progress.hidden = !busy;
-  form.setAttribute('aria-busy', String(busy));
-  for (const control of form.elements) control.disabled = busy;
-  form.querySelector('[type="submit"]').textContent = busy ? '正在保存…' : editor.error ? '重试保存' : '保存';
-}
-
-function persistEditorDraft() {
-  const editor = state.editor;
-  if (!editor || editor.saving || editor.closing) return;
-  const values = editorValues();
-  editor.values = values;
-  editor.pendingDraft = values;
-  if (editor.draftTask) return editor.draftTask;
-  editor.draftTask = (async () => {
-    while (editor.pendingDraft && state.editor === editor && !editor.saving && !editor.closing) {
-      const snapshot = editor.pendingDraft;
-      editor.pendingDraft = null;
-      try {
-        await commit((db) => {
-          if (state.editor !== editor || editor.saving || editor.closing) return null;
-          const baseline = editor.baseline;
-          const changed = snapshot.title !== baseline.title || snapshot.content !== baseline.content || snapshot.categoryId !== baseline.categoryId;
-          return changed ? saveDraft(db, editor.reference, snapshot) : discardDraft(db, editor.reference);
-        });
-        if (editor.errorKind === 'draft') { editor.error = ''; editor.errorKind = null; }
-      } catch (error) {
-        editor.error = `草稿未保存：${error.message || '请重试。'} 当前输入仍保留，请点击保存。`;
-        editor.errorKind = 'draft';
-      }
-      if (state.editor === editor) updateEditorFeedback();
-    }
-  })().finally(() => { editor.draftTask = null; });
-  return editor.draftTask;
-}
-
-async function beginEditorCategoryCreate() {
-  if (!state.editor || state.editor.privacy === 'private') return;
-  const values = editorValues();
-  state.editor.values = values;
-  await commit((db) => saveDraft(db, state.editor.reference, values));
-  state.editor.categoryCreating = true;
-  render();
-  document.querySelector('#editor-new-category')?.focus();
-}
-
-async function createEditorCategory() {
-  if (!state.editor) return;
-  const name = document.querySelector('#editor-new-category')?.value ?? '';
-  try {
-    await commit((db) => {
-      const created = createCategory(db, scopeFor(state.editor.type, state.editor.privacy), name);
-      state.editor.values = { ...state.editor.values, categoryId: created.category.id };
-      return saveDraft(created.database, state.editor.reference, state.editor.values);
-    });
-    state.editor.categoryCreating = false;
-    render();
-    showToast('分类已新建并选中');
-  } catch (error) {
-    showToast(error.message || '新建分类失败。');
-  }
 }
 
 async function beginPackageCategoryCreate() {
@@ -899,42 +727,6 @@ async function updatePackageCategory(categoryId) {
   }
 }
 
-async function returnFromEditor() {
-  if (!state.editor || !editorChanged()) return finishEditorReturn();
-  showConfirm({
-    title: '放弃未保存的更改',
-    description: '放弃后，这次编辑草稿将被删除。',
-    actionLabel: '放弃草稿',
-    danger: true,
-    onConfirm: () => finishEditorReturn()
-  });
-}
-
-async function finishEditorReturn() {
-  const editor = state.editor;
-  if (editor?.saving || editor?.closing) return;
-  try {
-    if (editor) {
-      editor.values = editorValues();
-      editor.closing = true;
-      editor.pendingDraft = null;
-      updateEditorFeedback();
-      await editor.draftTask;
-      // Reverting to the baseline and immediately going back can cancel a
-      // queued draft deletion. Always clear any older draft before leaving.
-      await commit((db) => getDraft(db, editor.reference) ? discardDraft(db, editor.reference) : null);
-    }
-    state.editor = null;
-    state.view = 'library';
-    render();
-  } catch (error) {
-    if (editor) { editor.error = error.message || '无法放弃草稿，请重试。'; editor.errorKind = 'save'; }
-  } finally {
-    if (editor) editor.closing = false;
-    if (state.editor === editor) updateEditorFeedback();
-  }
-}
-
 function showConfirm({ title, description, actionLabel, danger = false, onConfirm }) {
   confirmTitle.textContent = title;
   confirmDescription.textContent = description;
@@ -955,47 +747,6 @@ async function copyText(text, { recordId = null } = {}) {
   }
 }
 
-async function saveEditor() {
-  const editor = state.editor;
-  if (!editor || editor.saving || editor.closing) return;
-  const values = editorValues();
-  editor.values = values;
-  editor.saving = true;
-  editor.error = '';
-  editor.errorKind = null;
-  editor.pendingDraft = null;
-  updateEditorFeedback();
-  const slowTimer = setTimeout(() => {
-    editor.slowSave = true;
-    if (state.editor === editor) updateEditorFeedback();
-  }, 10000);
-  const input = { id: editor.assetId, type: editor.type, privacy: editor.privacy, ...values };
-  try {
-    await editor.draftTask;
-    let queued = false;
-    await commit((db) => {
-      const result = saveAsset(db, input);
-      queued = result.queued;
-      return result.database;
-    });
-    if (queued) void sendBackground({ type: 'schedule-ai' }).catch(() => {
-      showToast('内容已保存，后台整理暂未启动。');
-    });
-    state.editor = null;
-    state.view = 'library';
-    render();
-    showToast('已保存');
-  } catch (error) {
-    editor.error = error.message || '保存失败，请重试。';
-    editor.errorKind = 'save';
-  } finally {
-    clearTimeout(slowTimer);
-    editor.saving = false;
-    editor.slowSave = false;
-    if (state.editor === editor) updateEditorFeedback();
-  }
-}
-
 async function deleteAsset(id) {
   const asset = assetById(id);
   if (!asset) return;
@@ -1010,10 +761,9 @@ async function deleteAsset(id) {
         throw new Error(READ_ONLY_MESSAGE);
       }
       state.database = await removeAssetAndPackage(state.database, id, {
-        persist: async () => applyDatabaseChange((db) => removeAsset(db, id)),
         deletePackage
       });
-      state.editor = null;
+      editor.clear();
       state.view = 'library';
       render();
       showToast('已永久删除');
@@ -1033,7 +783,7 @@ function moveAsset(id, target) {
     actionLabel: isPrivateTarget ? '移入私密库' : '移出私密库',
     onConfirm: async () => {
       await commit((db) => moveAigcAsset(db, id, target));
-      state.editor = null;
+      editor.clear();
       state.activeTab = 'aigc';
       state.privacy = target;
       state.view = 'library';
@@ -1123,7 +873,8 @@ async function importBackup(file) {
   if (!file) return;
   try {
     const result = await importBackupRecords(state.database, await file.text(), { putPackage, deletePackage });
-    state.database = await loadDatabase();
+    state.database = result.database;
+    state.readOnly = isReadOnlyDatabase(state.database);
     state.categoryId = null;
     render();
     showToast(`已导入 ${result.imported} 项，跳过 ${result.skipped} 项`);
@@ -1137,9 +888,7 @@ async function importBackup(file) {
 async function openAsset(asset, manage = false) {
   if (!asset) return;
   if (standaloneTab && asset.type === 'skill' && !manage) {
-    readerAssetId = asset.id;
-    readerPath = 'SKILL.md';
-    readerFilesOpen = window.innerWidth >= 1100; readerFolderOpen.clear();
+    reader.open(asset.id);
     state.view = 'library';
     state.activeTab = 'skill';
     render();
@@ -1158,7 +907,7 @@ async function openAsset(asset, manage = false) {
   }
   openEditor(asset);
   await scanBoundDeliveries();
-  if (state.view === 'editor' && state.editor?.assetId === asset.id) render();
+  if (state.view === 'editor' && editor.current?.assetId === asset.id) render();
 }
 
 async function activateProvider(id) {
@@ -1256,8 +1005,8 @@ async function updateGitHubSkill(id) {
 
 async function handleClick(event) {
   const readerLink = event.target.closest('.skill-markdown a');
-  if (readerLink?.dataset.readerFile) { event.preventDefault(); readSkillFile(readerLink.dataset.readerFile, readerLink.dataset.readerHash); return; }
-  if (readerLink?.dataset.readerHash !== undefined) { event.preventDefault(); scrollSkillHeading(readerLink.dataset.readerHash); return; }
+  if (readerLink?.dataset.readerFile) { event.preventDefault(); reader.readFile(readerLink.dataset.readerFile, readerLink.dataset.readerHash); return; }
+  if (readerLink?.dataset.readerHash !== undefined) { event.preventDefault(); reader.scrollHeading(readerLink.dataset.readerHash); return; }
   const button = event.target.closest('button');
   if (!button) {
     if (!event.target.closest('.category-picker') && (state.categoryMenuOpen || state.sortMenuOpen)) {
@@ -1277,25 +1026,25 @@ async function handleClick(event) {
     return render();
   }
   if (!action) return;
-  if (state.editor?.saving || state.editor?.closing) return;
+  if (editor.current?.saving || editor.current?.closing) return;
   if (action === 'read-skill') return openAsset(assetById(button.dataset.id));
-  if (action === 'read-skill-file') return readSkillFile(button.dataset.path);
+  if (action === 'read-skill-file') return reader.readFile(button.dataset.path);
   if (action === 'manage-reader-skill') return openAsset(assetById(button.dataset.id), true);
   if (action === 'open-tab') {
     button.disabled = true;
     try {
-      if (state.view === 'editor') await persistEditorDraft();
-      const url = new URL(chrome.runtime.getURL('popup.html'));
+      if (state.view === 'editor') await editor.persistDraft();
+      const url = new URL(chrome.runtime.getURL(EXTENSION_PATHS.popup));
       url.searchParams.set('mode', 'tab');
       if (state.tabId != null) url.searchParams.set('tab', state.tabId);
-      const selectedId = state.editor?.assetId ?? state.packageAssetId ?? readerAssetId;
+      const selectedId = editor.current?.assetId ?? state.packageAssetId ?? reader.selectedId;
       if (selectedId && assetById(selectedId)?.type === 'skill') url.searchParams.set('asset', selectedId);
       await chrome.tabs.create({ url: url.href });
     } catch { showToast('无法打开新标签页，请重试。'); }
     finally { button.disabled = false; }
     return;
   }
-  if (action === 'home') return state.view === 'editor' ? returnFromEditor() : (state.view = 'library', render());
+  if (action === 'home') return state.view === 'editor' ? editor.requestReturn() : (state.view = 'library', render());
   if (action === 'library-sync-remove') { try { state.librarySync = await sendBackground({ type: 'library-sync-remove' }); render(); } catch (error) { showToast(error.message); } return; }
   if (action === 'library-sync-now') {
     state.librarySyncBusy = true; render();
@@ -1310,12 +1059,12 @@ async function handleClick(event) {
     return;
   }
   if (action === 'settings') {
-    if (state.view === 'editor') return returnFromEditor();
+    if (state.view === 'editor') return editor.requestReturn();
     return openAgentFolderSettings();
   }
   if (action === 'open-agent-settings') return openAgentFolderSettings();
   if (action === 'library') { state.view = 'library'; return render(); }
-  if (action === 'editor-back') return returnFromEditor();
+  if (action === 'editor-back') return editor.requestReturn();
   if (action === 'new-asset') return openEditor();
   if (action === 'open-asset') return openAsset(assetById(button.dataset.id));
   if (action === 'copy-asset') {
@@ -1323,14 +1072,14 @@ async function handleClick(event) {
     return copyText(formatSkillInsert(asset?.content ?? '', asset?.type), { recordId: button.dataset.id });
   }
   if (action === 'copy-editor') {
-    const content = formatSkillInsert(editorValues().content, state.editor?.type);
-    return state.editor?.assetId ? copyText(content, { recordId: state.editor.assetId }) : copyText(content);
+    const content = formatSkillInsert(editor.values().content, editor.current?.type);
+    return editor.current?.assetId ? copyText(content, { recordId: editor.current.assetId }) : copyText(content);
   }
-  if (action === 'new-category-from-editor') return state.view === 'package-detail' ? beginPackageCategoryCreate() : beginEditorCategoryCreate();
-  if (action === 'create-category-from-editor') return state.view === 'package-detail' ? createPackageCategory() : createEditorCategory();
+  if (action === 'new-category-from-editor') return state.view === 'package-detail' ? beginPackageCategoryCreate() : editor.beginCategoryCreate();
+  if (action === 'create-category-from-editor') return state.view === 'package-detail' ? createPackageCategory() : editor.createCategory();
   if (action === 'cancel-category-from-editor') {
     if (state.view === 'package-detail') state.packageCategoryCreating = false;
-    else if (state.editor) state.editor.categoryCreating = false;
+    else if (editor.current) editor.cancelCategoryCreate();
     return render();
   }
   if (action === 'toggle-category-menu') { state.categoryMenuOpen = !state.categoryMenuOpen; state.sortMenuOpen = false; return render(); }
@@ -1377,7 +1126,7 @@ async function handleClick(event) {
 }
 
 async function openAgentFolderSettings() {
-  if (state.editor) state.editor = null;
+  if (editor.current) editor.clear();
   state.view = 'settings';
   render();
   try {
@@ -1475,7 +1224,7 @@ async function handleSubmit(event) {
     }
     return;
   }
-  if (form.id === 'editor-form') return saveEditor();
+  if (form.id === 'editor-form') return editor.save();
   if (form.id === 'private-gate-form') return handlePrivateGate(form);
   if (form.id === 'reset-lock-form') return resetLock(form);
   if (form.id === 'provider-form') {
@@ -1545,7 +1294,7 @@ async function initialize() {
     state.githubTokenConfigured = Boolean(await githubToken());
     try { state.librarySync = await sendBackground({ type: 'library-sync-open' }); } catch { /* Offline local use remains available. */ }
     state.activeTab = ['generic', 'skill', 'aigc', 'command'].includes(state.database.settings.lastNormalTab) ? state.database.settings.lastNormalTab : 'generic';
-    if (standaloneTab && assetById(readerAssetId)?.type === 'skill') state.activeTab = 'skill';
+    if (standaloneTab && assetById(reader.selectedId)?.type === 'skill') state.activeTab = 'skill';
     try { state.agentBindings = await listBindings(); } catch { state.agentBindings = []; }
     try { await scanBoundDeliveries(); } catch { /* 未授权读取时按元数据展示。 */ }
     try {
@@ -1566,10 +1315,10 @@ async function initialize() {
       state.database = next;
       state.readOnly = isReadOnlyDatabase(next);
       if (applyingOwnWrite) return;
-      if (state.view === 'editor' && state.editor) {
-        state.editor.values = editorValues();
+      if (state.view === 'editor' && editor.current) {
+        editor.capture();
         // External background writes must not replace focused form controls.
-        updateEditorFeedback();
+        editor.feedback();
         return;
       }
       render();
@@ -1590,14 +1339,14 @@ app.addEventListener('input', (event) => {
     search?.setSelectionRange(state.search.length, state.search.length);
     return;
   }
-  if (event.target.closest('#editor-form')) void persistEditorDraft();
+  if (event.target.closest('#editor-form')) void editor.persistDraft();
 });
 app.addEventListener('change', (event) => {
   if (event.target.id === 'editor-category' && state.view === 'package-detail') {
     void updatePackageCategory(event.target.value || null);
     return;
   }
-  if (event.target.closest('#editor-form')) void persistEditorDraft();
+  if (event.target.closest('#editor-form')) void editor.persistDraft();
   if (event.target.id === 'ai-enabled') {
     void commit((db) => updateAiSettings(db, { enabled: event.target.checked })).then(() => { if (event.target.checked) return sendBackground({ type: 'schedule-ai' }); }).then(() => { render(); showToast(event.target.checked ? '后台 AI 已开启' : '后台 AI 已关闭'); }).catch(() => showToast('更新后台 AI 设置失败。'));
   }

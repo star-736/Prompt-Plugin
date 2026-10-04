@@ -199,9 +199,9 @@
     else { const sel = document.getSelection(); savedRange = sel?.rangeCount ? sel.getRangeAt(0).cloneRange() : null; }
   }
 
-  function restoreSelection(el) {
-    if (isField(el) && savedInputRange) el.setSelectionRange(savedInputRange.start, savedInputRange.end);
-    else if (savedRange) { const sel = document.getSelection(); sel.removeAllRanges(); sel.addRange(savedRange); }
+  function restoreSelection(el, { inputRange, range }) {
+    if (isField(el) && inputRange) el.setSelectionRange(inputRange.start, inputRange.end);
+    else if (range) { const sel = document.getSelection(); sel.removeAllRanges(); sel.addRange(range); }
   }
 
   function selectInlineRange(el, start, end) {
@@ -525,12 +525,13 @@
     const start = anchorOffset;
     const pos = caretCharOffset(el);
     const insertId = item.id;
+    const selection = { inputRange: savedInputRange && { ...savedInputRange }, range: savedRange?.cloneRange() };
     close();
     const result = await bg('palette-insert', { id: insertId });
     if (!result?.content) return;
     el.focus();
     if (m === 'inline') selectInlineRange(el, start, pos ?? start);
-    else restoreSelection(el);
+    else restoreSelection(el, selection);
     await new Promise((r) => setTimeout(r, 30));
     const ok = await writeText(el, result.content);
     if (!ok) {

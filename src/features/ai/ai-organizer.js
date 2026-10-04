@@ -53,19 +53,37 @@ export function buildStructurePrompt(scope, categories, assets) {
   ].join('\n');
 }
 
-export async function chatCompletion(provider, apiKey, prompt, fetchImpl = fetch) {
+export const AI_REQUEST_TIMEOUT_MS = 30000;
+
+export async function chatCompletion(provider, apiKey, prompt, fetchImpl = fetch, { timeoutMs = AI_REQUEST_TIMEOUT_MS } = {}) {
   const endpoint = `${provider.baseUrl.replace(/\/+$/, '')}/chat/completions`;
   const payload = { model: provider.model, messages: [{ role: 'system', content: 'Return valid JSON only.' }, { role: 'user', content: prompt }], temperature: 0.2, response_format: { type: 'json_object' } };
-  let response = await fetchImpl(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` }, body: JSON.stringify(payload) });
-  if (response.status === 400 || response.status === 422) {
-    const { response_format, ...fallback } = payload;
-    response = await fetchImpl(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` }, body: JSON.stringify(fallback) });
+  const controller = new AbortController();
+  // One deadline covers JSON mode, its fallback, and response-body consumption.
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const request = (body) => fetchImpl(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify(body),
+    signal: controller.signal
+  });
+  try {
+    let response = await request(payload);
+    if (response.status === 400 || response.status === 422) {
+      const { response_format, ...fallback } = payload;
+      response = await request(fallback);
+    }
+    if (!response.ok) throw new Error(`Provider 请求失败（${response.status}）。`);
+    const responsePayload = await response.json();
+    const content = responsePayload?.choices?.[0]?.message?.content;
+    if (!content) throw new Error('Provider 未返回可用内容。');
+    return safeJson(content);
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error('Provider 请求超时，请检查网络后重试。');
+    throw error;
+  } finally {
+    clearTimeout(timer);
   }
-  if (!response.ok) throw new Error(`Provider 请求失败（${response.status}）。`);
-  const responsePayload = await response.json();
-  const content = responsePayload?.choices?.[0]?.message?.content;
-  if (!content) throw new Error('Provider 未返回可用内容。');
-  return safeJson(content);
 }
 
 export function parseAssetResult(value) {

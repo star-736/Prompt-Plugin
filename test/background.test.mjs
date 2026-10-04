@@ -3,13 +3,17 @@ import test from 'node:test';
 import { webcrypto } from 'node:crypto';
 import {
   APP_STORAGE_KEY,
+  applyDatabaseChange,
   createEmptyDatabase,
+  createCategory,
+  renameCategory,
+  setAssetCategory,
   saveAsset,
   setPrivacyPassword,
   updateAiSettings
-} from '../store.js';
+} from '../src/core/store.js';
 import { createChromeStub, createMemoryIndexedDB, seedDatabase } from './helpers.mjs';
-import { saveGitHubToken } from '../github-auth.js';
+import { saveGitHubToken } from '../src/features/github/github-auth.js';
 
 const skill = `---\nname: Email reviewer\ndescription: Review email drafts\n---\n\n# Instructions\nReview the email.`;
 const encodedSkill = Buffer.from(skill).toString('base64');
@@ -48,7 +52,7 @@ const stub = createChromeStub({
 
 seedDatabase(stub.local, enableSites(createEmptyDatabase(), ['https://chatgpt.com']));
 
-const { NOTICE_KEY, handleRuntimeMessage, githubPageContext } = await import('../background.js');
+const { NOTICE_KEY, handleRuntimeMessage, githubPageContext } = await import('../src/background/background.js');
 
 test('collect and update send the configured token to every GitHub API request', async () => {
   seedDatabase(stub.local, createEmptyDatabase());
@@ -330,7 +334,7 @@ test('runtime onMessage wrapper, permission retry, and palette broadcast fallbac
 });
 
 test('library sync messages trust extension tabs, reject websites, and schedule or remove automatic checks', async () => {
-  const extensionSender = { tab: { id: 7 }, url: chrome.runtime.getURL('popup.html?mode=tab') };
+  const extensionSender = { tab: { id: 7 }, url: chrome.runtime.getURL('src/ui/popup/popup.html?mode=tab') };
   const websiteSender = { tab: { id: 7 }, url: 'https://example.com/' };
   await assert.rejects(handleRuntimeMessage({ type: 'library-sync-configure', config: {} }, websiteSender), /扩展页/);
   await assert.rejects(handleRuntimeMessage({ type: 'library-sync-now' }, websiteSender), /扩展页/);
@@ -343,4 +347,211 @@ test('library sync messages trust extension tabs, reject websites, and schedule 
   await handleRuntimeMessage({ type: 'library-sync-remove' }, extensionSender);
   assert.equal((await handleRuntimeMessage({ type: 'library-sync-now' }, extensionSender)).enabled, false);
   assert.equal((await handleRuntimeMessage({ type: 'library-sync-open' }, extensionSender)).enabled, false);
+});
+
+async function seedQueuedAiAssets(contents = ['old content']) {
+  let database = await setPrivacyPassword(createEmptyDatabase(), '123456', webcrypto);
+  database = updateAiSettings(database, { enabled: true });
+  for (const [index, content] of contents.entries()) database = saveAsset(database, { type: 'generic', content }, { id: `race-${index}` }).database;
+  seedDatabase(stub.local, database);
+  await handleRuntimeMessage({ type: 'save-provider', password: '123456', provider: { kind: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'test', apiKey: 'sk-test' } });
+}
+
+function deferredProviderResponse() {
+  let release, started;
+  const ready = new Promise((resolve) => { started = resolve; });
+  const response = new Promise((resolve) => { release = resolve; });
+  let calls = 0;
+  const fetchImpl = async () => { calls += 1; started(); return response; };
+  const finish = (title = 'old title') => release({ ok: true, status: 200, json: async () => ({ choices: [{ message: { content: JSON.stringify({ title, categoryName: null }) } }] }) });
+  return { ready, finish, fetchImpl, get calls() { return calls; } };
+}
+
+test('overlapping AI requests share a run and an edited asset rejects the old response', async () => {
+  await seedQueuedAiAssets();
+  const previousFetch = globalThis.fetch;
+  const deferred = deferredProviderResponse();
+  globalThis.fetch = deferred.fetchImpl;
+  const first = handleRuntimeMessage({ type: 'process-ai-now' });
+  await deferred.ready;
+  const second = handleRuntimeMessage({ type: 'process-ai-now' });
+  try {
+    await applyDatabaseChange((latest) => saveAsset(latest, { ...latest.assets[0], content: 'new content' }));
+    const freshEntry = stub.local[APP_STORAGE_KEY].ai.queue[0].id;
+    deferred.finish();
+    await Promise.all([first, second]);
+    assert.equal(deferred.calls, 1, 'an alarm/manual overlap must not duplicate the model request');
+    assert.equal(stub.local[APP_STORAGE_KEY].assets[0].title, '');
+    assert.equal(stub.local[APP_STORAGE_KEY].assets[0].content, 'new content');
+    assert.equal(stub.local[APP_STORAGE_KEY].ai.queue[0].id, freshEntry);
+    globalThis.fetch = async (_url, init) => {
+      assert.match(init.body, /new content/);
+      return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '{"title":"new title","categoryName":null}' } }] }) };
+    };
+    await handleRuntimeMessage({ type: 'process-ai-now' });
+    assert.equal(stub.local[APP_STORAGE_KEY].assets[0].title, 'new title');
+    assert.equal(stub.local[APP_STORAGE_KEY].ai.queue.length, 0);
+  } finally { deferred.finish(); await Promise.all([first, second]); globalThis.fetch = previousFetch; }
+});
+
+test('AI session removal or disabling during a request preserves its queue and current status', async () => {
+  const previousFetch = globalThis.fetch;
+  try {
+    for (const action of ['clear-session', 'disable']) {
+      await seedQueuedAiAssets();
+      const deferred = deferredProviderResponse();
+      globalThis.fetch = deferred.fetchImpl;
+      const running = handleRuntimeMessage({ type: 'process-ai-now' });
+      await deferred.ready;
+      try {
+        await applyDatabaseChange((latest) => updateAiSettings(latest, { ...(action === 'disable' ? { enabled: false } : {}), status: { state: 'idle', message: 'current setting' } }));
+        if (action === 'clear-session') await handleRuntimeMessage({ type: 'clear-ai-session' });
+        deferred.finish();
+        await running;
+        assert.equal(stub.local[APP_STORAGE_KEY].assets[0].title, '');
+        assert.equal(stub.local[APP_STORAGE_KEY].ai.queue.length, 1);
+        assert.equal(stub.local[APP_STORAGE_KEY].ai.status.message, 'current setting');
+      } finally { deferred.finish(); await running; }
+    }
+  } finally { globalThis.fetch = previousFetch; }
+});
+
+test('an asset removed from the queue during another request is not sent to the provider', async () => {
+  await seedQueuedAiAssets(['first', 'second']);
+  const previousFetch = globalThis.fetch;
+  const deferred = deferredProviderResponse();
+  globalThis.fetch = deferred.fetchImpl;
+  const running = handleRuntimeMessage({ type: 'process-ai-now' });
+  await deferred.ready;
+  try {
+    await applyDatabaseChange((latest) => { latest.assets = latest.assets.filter((item) => item.id !== 'race-1'); latest.ai.queue = latest.ai.queue.filter((item) => item.assetId !== 'race-1'); return latest; });
+    deferred.finish();
+    await running;
+    assert.equal(deferred.calls, 1);
+    assert.equal(stub.local[APP_STORAGE_KEY].assets.length, 1);
+  } finally { deferred.finish(); await running; globalThis.fetch = previousFetch; }
+});
+
+test('grouping rejects assets edited after its prompt while retaining unchanged matches', async () => {
+  await seedQueuedAiAssets(['first', 'second']);
+  await applyDatabaseChange((latest) => updateAiSettings(latest, { thresholds: { uncategorized: 1 } }));
+  const previousFetch = globalThis.fetch;
+  let release, started;
+  const ready = new Promise((resolve) => { started = resolve; });
+  const response = new Promise((resolve) => { release = resolve; });
+  let requests = 0;
+  globalThis.fetch = async () => {
+    requests += 1;
+    if (requests <= 2) return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '{"title":null,"categoryName":null}' } }] }) };
+    started();
+    return response;
+  };
+  const running = handleRuntimeMessage({ type: 'process-ai-now' });
+  await ready;
+  const finish = () => release({ ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '{"groups":[{"name":"group","assetIds":["race-0","race-1"]}]}' } }] }) });
+  try {
+    await applyDatabaseChange((latest) => saveAsset(latest, { ...latest.assets[0], content: 'edited during grouping' }));
+    finish();
+    await running;
+    const database = stub.local[APP_STORAGE_KEY];
+    assert.equal(database.assets.find((asset) => asset.id === 'race-0').categoryId, null);
+    assert.ok(database.assets.find((asset) => asset.id === 'race-1').categoryId);
+    assert.equal(database.ai.queue[0].assetId, 'race-0');
+  } finally { finish(); await running; globalThis.fetch = previousFetch; }
+});
+
+test('changing Provider during a failed request does not overwrite the new status', async () => {
+  await seedQueuedAiAssets();
+  const providerId = stub.local[APP_STORAGE_KEY].ai.activeProviderId;
+  const previousFetch = globalThis.fetch;
+  let release, started;
+  const ready = new Promise((resolve) => { started = resolve; });
+  const response = new Promise((resolve) => { release = resolve; });
+  globalThis.fetch = async () => { started(); return response; };
+  const running = handleRuntimeMessage({ type: 'process-ai-now' });
+  await ready;
+  try {
+    await handleRuntimeMessage({ type: 'save-provider', password: '123456', provider: { id: providerId, kind: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'replacement', apiKey: 'sk-new' } });
+    await applyDatabaseChange((latest) => updateAiSettings(latest, { status: { state: 'idle', message: 'replacement provider' } }));
+    release({ ok: false, status: 500 });
+    await running;
+    assert.equal(stub.local[APP_STORAGE_KEY].ai.status.message, 'replacement provider');
+    assert.equal(stub.local[APP_STORAGE_KEY].ai.queue.length, 1);
+  } finally { release({ ok: false, status: 500 }); await running; globalThis.fetch = previousFetch; }
+});
+
+test('a session or Provider change restores an alarm consumed while an old AI run is pending', async () => {
+  const previousFetch = globalThis.fetch;
+  try {
+    for (const change of ['session', 'provider']) {
+      await seedQueuedAiAssets();
+      const deferred = deferredProviderResponse();
+      globalThis.fetch = deferred.fetchImpl;
+      const first = handleRuntimeMessage({ type: 'process-ai-now' });
+      await deferred.ready;
+      let second;
+      try {
+        if (change === 'session') {
+          await handleRuntimeMessage({ type: 'unlock-ai', password: '123456' });
+        } else {
+          const id = stub.local[APP_STORAGE_KEY].ai.activeProviderId;
+          await handleRuntimeMessage({ type: 'save-provider', password: '123456', provider: { id, kind: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'replacement', apiKey: 'new-key' } });
+          await handleRuntimeMessage({ type: 'schedule-ai' });
+        }
+        stub.alarms.length = 0; // The alarm has fired; it no longer exists pending.
+        second = handleRuntimeMessage({ type: 'process-ai-now' });
+        deferred.finish();
+        await Promise.all([first, second]);
+        assert.equal(deferred.calls, 1);
+        assert.equal(stub.local[APP_STORAGE_KEY].assets[0].title, '');
+        assert.equal(stub.local[APP_STORAGE_KEY].ai.queue.length, 1);
+        assert.ok(stub.alarms.some((alarm) => alarm.name === 'futurecontext.ai-queue'), `${change} lost the replacement alarm`);
+      } finally { deferred.finish(); await Promise.all([first, second]); }
+    }
+  } finally { globalThis.fetch = previousFetch; }
+});
+
+test('an unchanged failing Provider pauses without continuously rescheduling its queue', async () => {
+  await seedQueuedAiAssets();
+  const previousFetch = globalThis.fetch;
+  stub.alarms.length = 0;
+  globalThis.fetch = async () => ({ ok: false, status: 500 });
+  try {
+    await handleRuntimeMessage({ type: 'process-ai-now' });
+    assert.equal(stub.local[APP_STORAGE_KEY].ai.status.state, 'paused');
+    assert.equal(stub.local[APP_STORAGE_KEY].ai.queue.length, 1);
+    assert.equal(stub.alarms.length, 0);
+  } finally { globalThis.fetch = previousFetch; }
+});
+
+test('a stale structure response preserves the pending change count and cooldown', async () => {
+  await seedQueuedAiAssets();
+  await applyDatabaseChange((latest) => {
+    const categorized = createCategory(latest, 'generic', 'old', { id: 'structure-cat' }).database;
+    return updateAiSettings(setAssetCategory(categorized, 'race-0', 'structure-cat'), { thresholds: { restructureChanges: 1, restructureDays: 14 } });
+  });
+  const previousFetch = globalThis.fetch;
+  let release, started;
+  const ready = new Promise((resolve) => { started = resolve; });
+  const response = new Promise((resolve) => { release = resolve; });
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    if (calls === 1) return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '{"title":null,"categoryName":null}' } }] }) };
+    started();
+    return response;
+  };
+  const running = handleRuntimeMessage({ type: 'process-ai-now' });
+  await ready;
+  const finish = () => release({ ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '{"proposal":{"summary":"merge","groups":[{"from":["old"],"to":"merged"}]}}' } }] }) });
+  try {
+    await applyDatabaseChange((latest) => renameCategory(latest, 'structure-cat', 'new'));
+    finish();
+    await running;
+    const database = stub.local[APP_STORAGE_KEY];
+    assert.equal(calls, 2);
+    assert.equal(database.ai.proposals.length, 0);
+    assert.equal(database.ai.changeCountSinceRestructure, 1);
+    assert.equal(database.ai.lastRestructureAt, null);
+  } finally { finish(); await running; globalThis.fetch = previousFetch; }
 });

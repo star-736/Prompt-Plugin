@@ -12,9 +12,9 @@ import {
   setSkillDeliveryTarget,
   updateAiSettings,
   updateInPlaceSettings
-} from '../store.js';
-import { createDeliveryMarker } from '../agent-deliver.js';
-import { putBinding } from '../agent-folders.js';
+} from '../src/core/store.js';
+import { createDeliveryMarker } from '../src/features/agents/agent-deliver.js';
+import { putBinding } from '../src/features/agents/agent-folders.js';
 import { click, confirmOpenDialog, createChromeStub, createMemoryDirectory, createMemoryIndexedDB, flush, installDom, loadFreshEntry, popupHtml, seedDatabase, waitFor, writeMemoryFile } from './helpers.mjs';
 
 const skill = `---\nname: Email reviewer\ndescription: Review email drafts\n---\n\n# Instructions\nReview the email.`;
@@ -143,7 +143,7 @@ if (t.name.includes('do not open the directory picker')) {
 }
 if (!t.name.startsWith('new library preset')) seedDatabase(stub.local, database);
 
-await import('../package-store.js').then(({ putPackage }) => putPackage({
+await import('../src/platform/package-store.js').then(({ putPackage }) => putPackage({
   id: 'pkg-1',
   files: [
     { path: 'SKILL.md', content: Buffer.from(skill).toString('base64'), size: 20, contentType: 'text/plain' },
@@ -153,7 +153,7 @@ await import('../package-store.js').then(({ putPackage }) => putPackage({
   totalSize: 32
 }, indexedDb));
 
-await loadFreshEntry('../popup.js');
+await loadFreshEntry('../src/ui/popup/popup.js');
 await waitFor(() => document.querySelector('.tabs'));
 });
 afterEach(() => {
@@ -180,7 +180,7 @@ test('open new tab preserves the source tab without creating a window', async ()
   await waitFor(() => createdTabs.length === 1);
   const created = createdTabs[0];
   const url = new URL(created.url);
-  assert.equal(url.pathname, '/popup.html');
+  assert.equal(url.pathname, '/src/ui/popup/popup.html');
   assert.equal(url.searchParams.get('mode'), 'tab');
   assert.ok(url.searchParams.get('tab'));
   assert.equal(globalThis.chrome.windows.created.length, 0);
@@ -1149,4 +1149,27 @@ test('private-repository sync settings save dedicated token without echo, run im
   click('[data-action="library-sync-remove"]');
   await waitFor(() => document.querySelector('#library-sync-form').textContent.includes('同步设置与 Token 已移除'));
   assert.equal(document.querySelector('#library-sync-form [name="token"]').value, '');
+});
+
+
+test('confirmed backup import stays successful when any later storage read fails', async () => {
+  click('[data-action="settings"]');
+  await waitFor(() => document.querySelector('#backup-input'));
+  const imported = saveAsset(createEmptyDatabase(), { type: 'generic', content: 'confirmed import input' }, { id: 'import-read-failure' }).database;
+  const backup = createBackup(imported);
+  const input = document.querySelector('#backup-input');
+  Object.defineProperty(input, 'files', { configurable: true, value: [new window.File([JSON.stringify(backup)], 'backup.json', { type: 'application/json' })] });
+  const originalGet = stub.chrome.storage.local.get;
+  const originalSet = stub.chrome.storage.local.set;
+  let saved = false;
+  stub.chrome.storage.local.get = async (...args) => {
+    if (saved) throw new Error('read after import failed');
+    return originalGet(...args);
+  };
+  stub.chrome.storage.local.set = async (values) => { await originalSet(values); saved = true; };
+  input.dispatchEvent(new window.Event('change', { bubbles: true }));
+  await waitFor(() => /已导入 1 项/.test(toastText()));
+  assert.ok(stub.local['futurecontext.v1'].assets.some((asset) => asset.content === 'confirmed import input'));
+  click('[data-action="home"]');
+  assert.match(document.querySelector('.asset-list').textContent, /confirmed import input/);
 });

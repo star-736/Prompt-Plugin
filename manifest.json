@@ -14,7 +14,7 @@
     "https://*/*"
   ],
   "background": {
-    "service_worker": "background.js",
+    "service_worker": "src/background/background.js",
     "type": "module"
   },
   "commands": {
@@ -31,6 +31,6 @@
   },
   "action": {
     "default_title": "FutureContext",
-    "default_popup": "popup.html"
+    "default_popup": "src/ui/popup/popup.html"
   }
 }
