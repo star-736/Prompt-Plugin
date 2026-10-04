@@ -5,6 +5,7 @@
   "version": "0.4.0",
   "description": "Local-first AI asset library for Edge and Chrome",
   "scripts": {
+    "test:github-live": "node scripts/github-live.mjs",
     "test": "node --experimental-vm-modules --test test/*.test.mjs",
     "coverage": "node --experimental-vm-modules --test --experimental-test-coverage --test-coverage-lines=92 --test-coverage-include=src/**/*.js --test-coverage-exclude=test/** --test-coverage-exclude=node_modules/** test/*.test.mjs",
     "check": "node scripts/check.mjs"
