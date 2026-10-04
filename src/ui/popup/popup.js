@@ -142,6 +142,46 @@ const state = {
   deliveryAccess: {}
 };
 
+let syncDraftRequest = 0;
+let syncDraftTask = Promise.resolve();
+let syncDraftMessage = '';
+
+function syncFormValues(form) {
+  return {
+    repository: form.querySelector('[name=repository]').value,
+    token: form.querySelector('[name=token]').value,
+    enabled: form.querySelector('[name=enabled]').checked,
+    automatic: form.querySelector('[name=automatic]').checked
+  };
+}
+
+function syncDraftFeedback() {
+  const status = document.querySelector('#library-sync-draft-status');
+  if (status) status.textContent = syncDraftMessage;
+}
+
+function persistSyncForm(form) {
+  state.librarySyncDraft = syncFormValues(form);
+  const request = ++syncDraftRequest;
+  syncDraftMessage = '正在暂存…';
+  syncDraftFeedback();
+  // Send immediately; the background owns serialization after this page closes.
+  syncDraftTask = sendBackground({ type: 'library-sync-draft-write', draft: state.librarySyncDraft }).then(() => {
+    if (request === syncDraftRequest) { syncDraftMessage = '输入已暂存，重新打开可继续填写；尚未应用。'; syncDraftFeedback(); }
+    return true;
+  }, () => {
+    if (request === syncDraftRequest) { syncDraftMessage = '暂存失败，关闭前请重试，或在新标签页中继续填写。'; syncDraftFeedback(); }
+    return false;
+  });
+  return syncDraftTask;
+}
+
+function resetSyncFormDraft(result) {
+  ++syncDraftRequest;
+  state.librarySyncDraft = null;
+  syncDraftMessage = result?.draftWarning ?? '';
+}
+
 const reader = createSkillWorkspace({
   selectedId: pageParams.get('asset'),
   onChange: () => { if (state.view === 'library' && state.activeTab === 'skill') render(); },
@@ -482,13 +522,16 @@ function renderSettings() {
   const status = ai.status?.state === 'paused' ? ai.status.message : ai.enabled ? '后台整理已开启' : '后台整理未开启';
   const inPlace = state.database.settings.inPlace;
   const usage = usageSummary(state.database);
+  const syncForm = state.librarySyncDraft ?? state.librarySync;
   return `${renderReadOnlyBanner()}${pageHeading('设置', 'library')}<div class="settings-list">
     <div class="setting-row setting-row-stack"><div><div class="setting-title">GitHub 私有仓库同步</div><div class="setting-description">同步普通库及 Skill 文件，私密库与草稿仅保存在本机。使用已有个人私有仓库，专用 Token 仅授予该仓库 Contents 读写。</div></div>
       <form id="library-sync-form">
-        <div class="library-sync-fields"><label>私有仓库<input name="repository" aria-label="同步仓库" placeholder="owner/repo" value="${escapeHtml(state.librarySync?.repository ?? '')}" required /></label><label>同步 Token<input name="token" type="password" autocomplete="new-password" aria-label="同步专用 Token" placeholder="${state.librarySync?.configured ? '已配置；留空保留' : '粘贴同步 Token'}" maxlength="512" /></label></div>
-        <div class="library-sync-options"><label><input name="enabled" type="checkbox" ${state.librarySync?.enabled ? 'checked' : ''} />启用同步</label><label><input name="automatic" type="checkbox" ${state.librarySync?.automatic !== false ? 'checked' : ''} />自动同步</label></div>
+        <div class="library-sync-fields"><label>私有仓库<input name="repository" aria-label="同步仓库" placeholder="owner/repo" value="${escapeHtml(syncForm?.repository ?? '')}" maxlength="200" required /></label><label>同步 Token<input name="token" type="password" autocomplete="new-password" aria-label="同步专用 Token" placeholder="${state.librarySync?.configured ? '已配置；留空保留' : '粘贴同步 Token'}" maxlength="512" /></label></div>
+        <div class="library-sync-options"><label><input name="enabled" type="checkbox" ${syncForm?.enabled ? 'checked' : ''} />启用同步</label><label><input name="automatic" type="checkbox" ${syncForm?.automatic !== false ? 'checked' : ''} />自动同步</label></div>
         <div class="library-sync-actions"><button class="button button-primary button-small" type="submit" ${state.librarySyncBusy ? 'disabled' : ''}>保存设置</button><button class="button button-ghost button-small" type="button" data-action="library-sync-now" ${state.librarySyncBusy ? 'disabled' : ''}>${state.librarySyncBusy ? '正在同步…' : '立即同步'}</button><button class="button button-ghost button-small" type="button" data-action="library-sync-remove">移除设置</button></div>
         <div class="library-sync-status ${state.librarySync?.status?.state === 'error' ? 'is-error' : ''}" role="status">${escapeHtml(state.librarySync?.status?.message ?? '尚未同步')}${state.librarySync?.status?.lastSyncedAt ? ` · ${new Date(state.librarySync.status.lastSyncedAt).toLocaleString()}` : ''}</div>
+        <div class="library-sync-status">未保存的输入仅在本次浏览器会话暂存，关闭弹窗后可恢复；点击「保存设置」才应用。<button class="button button-ghost button-small" type="button" data-action="library-sync-draft-discard">放弃暂存</button></div>
+        <div id="library-sync-draft-status" class="library-sync-status" role="status">${escapeHtml(syncDraftMessage)}</div>
       </form></div>
     <div class="setting-row setting-row-stack"><div><div class="setting-title">GitHub Skill 收集 Token（可选）</div><div class="setting-description">${state.githubTokenConfigured ? '已配置，输入新 Token 可替换。' : '未配置，使用匿名请求额度。'}用于从公开 GitHub 仓库收集 Skill 文件包、检查 Skill 更新时提高 API 请求额度。不配置也能使用，但更容易触发限流。此 Token 不参与资料库同步，与上方同步 Token 独立保存。明文仅保存在当前浏览器配置文件中，不写入备份，表单不回显；能访问此配置文件的人可以读取。</div></div><form id="github-token-form"><input id="github-token" type="password" autocomplete="new-password" aria-label="GitHub Skill 收集 Token" placeholder="粘贴 Skill 收集 Token（可选）" maxlength="512" required /><button class="button button-primary button-small" type="submit">保存 Token</button><button class="button button-ghost button-small" type="button" data-action="remove-github-token">移除 Token</button><div id="github-token-status" role="status"></div></form></div>
     <div class="setting-row"><div><div class="setting-title">隐私锁</div><div class="setting-description">${lockStatus}。重设不会删除私密内容。</div></div><button class="button button-ghost button-small" type="button" data-action="reset-lock">${hasPrivacyLock(state.database) ? '重设隐私锁' : '设置隐私锁'}</button></div>
@@ -660,6 +703,11 @@ function render() {
   else if (state.view === 'package-detail') app.innerHTML = renderPackageDetail();
   else if (state.view === 'reset-lock') app.innerHTML = renderReadOnlyBanner() + renderLockReset();
   else app.innerHTML = renderLibrary();
+  if (state.view === 'settings') {
+    // Restore only an unsubmitted draft, never the configured credential.
+    document.querySelector('#library-sync-form [name=token]').value = state.librarySyncDraft?.token ?? '';
+    if (state.librarySyncBusy) document.querySelectorAll('#library-sync-form input, #library-sync-form button').forEach((control) => { control.disabled = true; });
+  }
   if (state.view === 'editor') editor.feedback();
   const navigation = document.querySelector('.skill-navigation');
   if (navigation) navigation.scrollTop = navigationScroll;
@@ -1034,8 +1082,10 @@ async function handleClick(event) {
     button.disabled = true;
     try {
       if (state.view === 'editor') await editor.persistDraft();
+      if (state.view === 'settings' && !await persistSyncForm(document.querySelector('#library-sync-form'))) throw new Error('暂存失败');
       const url = new URL(chrome.runtime.getURL(EXTENSION_PATHS.popup));
       url.searchParams.set('mode', 'tab');
+      if (state.view === 'settings') url.searchParams.set('view', 'settings');
       if (state.tabId != null) url.searchParams.set('tab', state.tabId);
       const selectedId = editor.current?.assetId ?? state.packageAssetId ?? reader.selectedId;
       if (selectedId && assetById(selectedId)?.type === 'skill') url.searchParams.set('asset', selectedId);
@@ -1045,7 +1095,17 @@ async function handleClick(event) {
     return;
   }
   if (action === 'home') return state.view === 'editor' ? editor.requestReturn() : (state.view = 'library', render());
-  if (action === 'library-sync-remove') { try { state.librarySync = await sendBackground({ type: 'library-sync-remove' }); render(); } catch (error) { showToast(error.message); } return; }
+  if (action === 'library-sync-remove' || action === 'library-sync-draft-discard') {
+    if (state.librarySyncBusy) return;
+    state.librarySyncBusy = true; render();
+    try {
+      const result = await sendBackground({ type: action });
+      if (action === 'library-sync-remove') state.librarySync = result;
+      resetSyncFormDraft(result);
+    } catch (error) { showToast(error.message); }
+    finally { state.librarySyncBusy = false; render(); }
+    return;
+  }
   if (action === 'library-sync-now') {
     state.librarySyncBusy = true; render();
     try { state.librarySync = await sendBackground({ type: 'library-sync-now' }); showToast(state.librarySync.status.message); }
@@ -1207,7 +1267,21 @@ function beginResetLock() {
 async function handleSubmit(event) {
   const form = event.target;
   event.preventDefault();
-  if (form.id === 'library-sync-form') { const config = { repository: form.querySelector('[name=repository]').value, token: form.querySelector('[name=token]').value, enabled: form.querySelector('[name=enabled]').checked, automatic: form.querySelector('[name=automatic]').checked }; try { await requestOrigins(['https://api.github.com/*']); state.librarySync = await sendBackground({ type: 'library-sync-configure', config }); render(); if (state.librarySync.enabled) { state.librarySync = await sendBackground({ type: 'library-sync-now' }); render(); } } catch (error) { showToast(error.message); } return; }
+  if (form.id === 'library-sync-form') {
+    if (state.librarySyncBusy) return;
+    const config = syncFormValues(form);
+    void persistSyncForm(form);
+    state.librarySyncBusy = true; render();
+    try {
+      await requestOrigins(['https://api.github.com/*']);
+      state.librarySync = await sendBackground({ type: 'library-sync-configure', config });
+      resetSyncFormDraft(state.librarySync);
+      render();
+      if (state.librarySync.enabled) state.librarySync = await sendBackground({ type: 'library-sync-now' });
+    } catch (error) { showToast(error.message); }
+    finally { state.librarySyncBusy = false; render(); }
+    return;
+  }
   if (form.id === 'github-token-form') {
     const input = form.querySelector('#github-token');
     const token = input.value;
@@ -1293,6 +1367,11 @@ async function initialize() {
     state.readOnly = isReadOnlyDatabase(state.database);
     state.githubTokenConfigured = Boolean(await githubToken());
     try { state.librarySync = await sendBackground({ type: 'library-sync-open' }); } catch { /* Offline local use remains available. */ }
+    try {
+      state.librarySyncDraft = await sendBackground({ type: 'library-sync-draft-read' });
+      if (state.librarySyncDraft) syncDraftMessage = '已恢复未保存的输入，请继续填写或放弃暂存。';
+    } catch { syncDraftMessage = '暂存读取失败，关闭前请重试，或在新标签页中继续填写。'; }
+    if (pageParams.get('view') === 'settings' || (state.librarySyncDraft && !pageParams.has('asset'))) state.view = 'settings';
     state.activeTab = ['generic', 'skill', 'aigc', 'command'].includes(state.database.settings.lastNormalTab) ? state.database.settings.lastNormalTab : 'generic';
     if (standaloneTab && assetById(reader.selectedId)?.type === 'skill') state.activeTab = 'skill';
     try { state.agentBindings = await listBindings(); } catch { state.agentBindings = []; }
@@ -1321,6 +1400,7 @@ async function initialize() {
         editor.feedback();
         return;
       }
+      if (state.view === 'settings' && document.querySelector('#library-sync-form')?.contains(document.activeElement)) return;
       render();
     });
     render();
@@ -1331,6 +1411,8 @@ async function initialize() {
 
 document.addEventListener('click', (event) => { void handleClick(event); });
 app.addEventListener('input', (event) => {
+  const syncForm = event.target.closest('#library-sync-form');
+  if (syncForm) { void persistSyncForm(syncForm); return; }
   if (event.target.id === 'search') {
     state.search = event.target.value;
     render();

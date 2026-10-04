@@ -352,12 +352,21 @@ test('library sync messages trust extension tabs, reject websites, and schedule 
   await assert.rejects(handleRuntimeMessage({ type: 'library-sync-configure', config: {} }, websiteSender), /扩展页/);
   await assert.rejects(handleRuntimeMessage({ type: 'library-sync-now' }, websiteSender), /扩展页/);
   await assert.rejects(handleRuntimeMessage({ type: 'library-sync-remove' }, websiteSender), /扩展页/);
+  for (const type of ['library-sync-draft-read', 'library-sync-draft-write', 'library-sync-draft-discard']) {
+    await assert.rejects(handleRuntimeMessage({ type, draft: { token: 'draft' } }, websiteSender), /扩展页/);
+  }
+  await handleRuntimeMessage({ type: 'library-sync-draft-write', draft: { repository: 'owner/repo', token: 'github_pat_sync' } }, extensionSender);
+  assert.equal((await handleRuntimeMessage({ type: 'library-sync-draft-read' }, extensionSender)).token, 'github_pat_sync');
   const saved = await handleRuntimeMessage({ type: 'library-sync-configure', config: { repository: 'owner/repo', token: 'github_pat_sync', enabled: true } }, extensionSender);
   assert.equal(saved.enabled, true);
   assert.equal(saved.configured, true);
+  assert.equal(await handleRuntimeMessage({ type: 'library-sync-draft-read' }, extensionSender), null);
   assert.ok(stub.alarms.some((alarm) => alarm.name === 'futurecontext.library-sync' && alarm.info.periodInMinutes === 5));
   assert.equal((await handleRuntimeMessage({ type: 'library-sync-settings' }, extensionSender)).repository, 'owner/repo');
   await handleRuntimeMessage({ type: 'library-sync-remove' }, extensionSender);
+  await handleRuntimeMessage({ type: 'library-sync-draft-write', draft: { repository: 'discard/repo' } }, extensionSender);
+  await handleRuntimeMessage({ type: 'library-sync-draft-discard' }, extensionSender);
+  assert.equal(await handleRuntimeMessage({ type: 'library-sync-draft-read' }, extensionSender), null);
   assert.equal((await handleRuntimeMessage({ type: 'library-sync-now' }, extensionSender)).enabled, false);
   assert.equal((await handleRuntimeMessage({ type: 'library-sync-open' }, extensionSender)).enabled, false);
 });

@@ -6,6 +6,8 @@
 
 同步所有普通 command/generic/skill/aigc 资产、普通分类与关联 Skill 包文件。同步白名单禁止私密资产/分类、草稿、锁密码、API Key、Token、Provider/会话配置、统计、skillDelivery、目录句柄。保留普通资产内容里用户主动写入的文本；白名单不是内容敏感词审查。
 
+未提交的同步表单通过后台排队暂存在仅可信扩展上下文可访问的 `chrome.storage.session`，包含仓库、Token 草稿和开关。关闭弹窗后重新打开恢复设置页和输入，Token 草稿以密码框恢复，已配置 Token 不读回表单。暂存不是启用或保存配置，不进入资料库、同步文件或备份。保存成功、移除设置或主动放弃后清除；配置保存失败保留输入，暂存失败显示提示。浏览器重启或扩展重载、更新会清除会话暂存。设置页打开新标签页时保留设置视图，凭据不进入 URL。
+
 ## 数据与合并
 
 远端固定文件 `.futurecontext/library.json`，格式 `futurecontext.library-sync` v1。记录键是 `asset:<稳定 ID>` 或 `category:<稳定 ID>`；值包含白名单资产或分类，或持久 `deleted:true` 标记。Skill 包嵌入关联资产，仅白名单 source 与相对路径/base64 文件数据。校验 ID、scope、隐私、类型、路径、防重复路径、实际文件尺寸、包限制、完整 source 和与正文一致的根 SKILL.md；无效远端文件整体拒绝，保持本地数据。

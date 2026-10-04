@@ -15,6 +15,7 @@ import {
 } from '../src/core/store.js';
 import { createDeliveryMarker } from '../src/features/agents/agent-deliver.js';
 import { putBinding } from '../src/features/agents/agent-folders.js';
+import { SYNC_SETTINGS_DRAFT_KEY, readSyncSettingsDraft, writeSyncSettingsDraft, discardSyncSettingsDraft, submitSyncSettings } from '../src/background/sync-settings-draft.js';
 import { click, confirmOpenDialog, createChromeStub, createMemoryDirectory, createMemoryIndexedDB, flush, installDom, loadFreshEntry, popupHtml, seedDatabase, waitFor, writeMemoryFile } from './helpers.mjs';
 
 const skill = `---\nname: Email reviewer\ndescription: Review email drafts\n---\n\n# Instructions\nReview the email.`;
@@ -37,10 +38,13 @@ stub = createChromeStub({
   indexedDB: indexedDb,
   sendMessage: async (message) => {
     messages.push(message);
+    if (message.type === 'library-sync-draft-read') return { ok: true, result: await readSyncSettingsDraft() };
+    if (message.type === 'library-sync-draft-write') return { ok: true, result: await writeSyncSettingsDraft(message.draft) };
+    if (message.type === 'library-sync-draft-discard') return { ok: true, result: await discardSyncSettingsDraft() };
     if (message.type === 'library-sync-open' || message.type === 'library-sync-settings') return { ok: true, result: { repository: 'owner/repo', enabled: false, automatic: true, configured: false, status: { state: 'idle', message: '尚未同步' } } };
-    if (message.type === 'library-sync-configure') return { ok: true, result: { ...message.config, token: undefined, configured: true, status: { state: 'idle', message: '已保存，等待同步' } } };
+    if (message.type === 'library-sync-configure') return { ok: true, result: await submitSyncSettings(async () => ({ ...message.config, token: undefined, configured: true, status: { state: 'idle', message: '已保存，等待同步' } })) };
     if (message.type === 'library-sync-now') return { ok: true, result: { repository: 'owner/repo', enabled: true, automatic: true, configured: true, status: { state: 'success', message: '同步完成' } } };
-    if (message.type === 'library-sync-remove') return { ok: true, result: { repository: '', enabled: false, automatic: true, configured: false, status: { state: 'idle', message: '同步设置与 Token 已移除' } } };
+    if (message.type === 'library-sync-remove') return { ok: true, result: await submitSyncSettings(async () => ({ repository: '', enabled: false, automatic: true, configured: false, status: { state: 'idle', message: '同步设置与 Token 已移除' } })) };
     if (message.type === 'read-notice') return { ok: true, result: { message: '刚才保存成功' } };
     if (message.type === 'sync-sites') return { ok: true, result: { sites: 1 } };
     if (message.type === 'schedule-ai') return { ok: true, result: { ok: true } };
@@ -1146,9 +1150,92 @@ test('private-repository sync settings save dedicated token without echo, run im
   assert.equal(stub.local['futurecontext.github-token'], undefined);
   click('[data-action="library-sync-now"]');
   await waitFor(() => messages.filter((message) => message.type === 'library-sync-now').length === 2);
+  await waitFor(() => !document.querySelector('[data-action="library-sync-remove"]').disabled);
   click('[data-action="library-sync-remove"]');
   await waitFor(() => document.querySelector('#library-sync-form').textContent.includes('同步设置与 Token 已移除'));
   assert.equal(document.querySelector('#library-sync-form [name="token"]').value, '');
+  assert.equal(stub.session[SYNC_SETTINGS_DRAFT_KEY], undefined);
+});
+
+test('sync settings draft survives closing and reopening the popup without applying credentials', async () => {
+  click('[data-action="settings"]');
+  let form = document.querySelector('#library-sync-form');
+  const before = structuredClone(stub.local);
+  form.querySelector('[name=repository]').value = 'star-736/futurecontext-library';
+  form.querySelector('[name=repository]').dispatchEvent(new window.Event('input', { bubbles: true }));
+  form.querySelector('[name=token]').value = 'github_pat_unsubmitted';
+  form.querySelector('[name=token]').dispatchEvent(new window.Event('input', { bubbles: true }));
+  form.querySelector('[name=enabled]').checked = true;
+  form.querySelector('[name=automatic]').checked = false;
+  form.querySelector('[name=enabled]').dispatchEvent(new window.Event('input', { bubbles: true }));
+  // Close immediately, while background storage work is still queued.
+  window.close();
+  stub.listeners.storageChanged.length = 0;
+  ({ window, document } = installDom(popupHtml()));
+  await loadFreshEntry('../src/ui/popup/popup.js');
+  await waitFor(() => document.querySelector('#library-sync-form'));
+  form = document.querySelector('#library-sync-form');
+  assert.equal(form.querySelector('[name=repository]').value, 'star-736/futurecontext-library');
+  assert.equal(form.querySelector('[name=token]').value, 'github_pat_unsubmitted');
+  assert.equal(form.querySelector('[name=token]').type, 'password');
+  assert.equal(form.querySelector('[name=enabled]').checked, true);
+  assert.equal(form.querySelector('[name=automatic]').checked, false);
+  assert.doesNotMatch(document.querySelector('#app').innerHTML, /github_pat_unsubmitted/);
+  assert.deepEqual(stub.local, before);
+  assert.equal(messages.some((message) => message.type === 'library-sync-configure' || message.type === 'library-sync-now'), false);
+  assert.ok(stub.accessLevels.some((item) => item.area === 'session' && item.accessLevel === 'TRUSTED_CONTEXTS'));
+  click('[data-action="library-sync-draft-discard"]');
+  await waitFor(() => document.querySelector('#library-sync-form [name=token]').value === '');
+  assert.equal(stub.session[SYNC_SETTINGS_DRAFT_KEY], undefined);
+  assert.equal(document.querySelector('#library-sync-form [name=repository]').value, 'owner/repo');
+});
+
+test('sync draft preserves focus during storage updates and survives failed submission', async () => {
+  click('[data-action="settings"]');
+  const input = document.querySelector('#library-sync-form [name=repository]');
+  input.value = 'edited/repository';
+  input.dispatchEvent(new window.Event('input', { bubbles: true }));
+  input.focus(); input.setSelectionRange(3, 3);
+  await stub.chrome.storage.local.set({ 'futurecontext.v1': { ...stub.local['futurecontext.v1'], revision: 100 } });
+  assert.equal(document.activeElement, input);
+  assert.equal(input.selectionStart, 3);
+  input.blur();
+  await stub.chrome.storage.local.set({ 'futurecontext.github-sync-status': { state: 'success', message: '后台完成' } });
+  assert.equal(document.querySelector('#library-sync-form [name=repository]').value, 'edited/repository');
+  const send = stub.chrome.runtime.sendMessage;
+  stub.chrome.runtime.sendMessage = async (message) => message.type === 'library-sync-configure' ? { ok: false, error: 'invalid settings' } : send(message);
+  document.querySelector('#library-sync-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  await waitFor(() => toastText() === 'invalid settings');
+  assert.equal(document.querySelector('#library-sync-form [name=repository]').value, 'edited/repository');
+  assert.equal((await readSyncSettingsDraft()).repository, 'edited/repository');
+  stub.chrome.runtime.sendMessage = send;
+  stub.chrome.storage.session.set = async () => { throw new Error('session unavailable'); };
+  const current = document.querySelector('#library-sync-form [name=repository]');
+  current.dispatchEvent(new window.Event('input', { bubbles: true }));
+  await waitFor(() => /暂存失败/.test(document.querySelector('#library-sync-draft-status').textContent));
+  assert.equal(current.value, 'edited/repository');
+});
+
+test('opening settings in a new tab preserves the settings view and draft without putting secrets in the URL', async () => {
+  click('[data-action="settings"]');
+  const form = document.querySelector('#library-sync-form');
+  form.querySelector('[name=repository]').value = 'copy/paste';
+  form.querySelector('[name=token]').value = 'github_pat_tab_draft';
+  const tabs = [];
+  stub.chrome.tabs.create = async (info) => { tabs.push(info); return info; };
+  click('[data-action="open-tab"]');
+  await waitFor(() => tabs.length === 1);
+  const url = new URL(tabs[0].url);
+  assert.equal(url.searchParams.get('view'), 'settings');
+  assert.equal(url.searchParams.get('mode'), 'tab');
+  assert.doesNotMatch(url.href, /github_pat|copy/);
+  assert.equal((await readSyncSettingsDraft()).token, 'github_pat_tab_draft');
+  window.close(); stub.listeners.storageChanged.length = 0;
+  ({ window, document } = installDom(popupHtml(), { url: 'https://example.com/popup.html?mode=tab&view=settings' }));
+  await loadFreshEntry('../src/ui/popup/popup.js');
+  await waitFor(() => document.querySelector('#library-sync-form'));
+  assert.equal(document.querySelector('#library-sync-form [name=repository]').value, 'copy/paste');
+  assert.equal(document.querySelector('#library-sync-form [name=token]').value, 'github_pat_tab_draft');
 });
 
 

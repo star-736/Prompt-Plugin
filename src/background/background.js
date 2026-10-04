@@ -4,6 +4,7 @@ import { AI_ALARM, aiSessionStatus, clearAiSession, deleteProvider, processAiQue
 import { collectFromActiveTab, updateGitHubSkill } from './github-collection.js';
 import { CAPTURE_MENU_ID, captureFromMenu, ensureContextMenu, openPaletteInActiveTab, paletteInsert, paletteSettings, queryPalette, readNotice, syncContentScripts } from './palette-controller.js';
 import { recoverUnreferencedPackages } from '../features/skills/package-lifecycle.js';
+import { readSyncSettingsDraft, writeSyncSettingsDraft, discardSyncSettingsDraft, submitSyncSettings } from './sync-settings-draft.js';
 export { NOTICE_KEY } from './palette-controller.js';
 export { githubPageContext } from './github-collection.js';
 
@@ -31,9 +32,12 @@ function assertMessageAllowed(type, sender) {
 
 export async function handleRuntimeMessage(message, sender = {}) {
   assertMessageAllowed(message.type, sender);
-  if (message.type === 'library-sync-remove') { const result = await removeSyncConfiguration(); await scheduleLibrarySync(); return result; }
+  if (message.type === 'library-sync-draft-read') return readSyncSettingsDraft();
+  if (message.type === 'library-sync-draft-write') return writeSyncSettingsDraft(message.draft);
+  if (message.type === 'library-sync-draft-discard') return discardSyncSettingsDraft();
+  if (message.type === 'library-sync-remove') { const result = await submitSyncSettings(() => removeSyncConfiguration()); await scheduleLibrarySync(); return result; }
   if (message.type === 'library-sync-settings') return syncSettings();
-  if (message.type === 'library-sync-configure') { const result = await configureSync(message.config); await scheduleLibrarySync(); return result; }
+  if (message.type === 'library-sync-configure') { const result = await submitSyncSettings(() => configureSync(message.config)); await scheduleLibrarySync(); return result; }
   if (message.type === 'library-sync-now') return runLibrarySync();
   if (message.type === 'library-sync-open') { await scheduleLibrarySync(); const settings = await syncSettings(); if (settings.enabled && settings.automatic) void runLibrarySync().catch(() => {}); return settings; }
   if (message.type === 'schedule-ai') { await scheduleAi(); return { ok: true }; }
