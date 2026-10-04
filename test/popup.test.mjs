@@ -660,6 +660,46 @@ test('discard waits for an active draft and prevents pending drafts from reappea
   assert.equal(document.querySelector('#editor-content').value, '');
 });
 
+test('reverting to the baseline and immediately returning clears an older draft', async () => {
+  click('[data-action="open-asset"][data-id="g1"]');
+  await waitFor(() => document.querySelector('#editor-form'));
+  const content = document.querySelector('#editor-content');
+  const baseline = content.value;
+  content.value = 'temporary change';
+  content.dispatchEvent(new window.Event('input', { bubbles: true }));
+  await waitFor(() => stub.local['futurecontext.v1'].drafts['generic:normal:g1']?.content === 'temporary change');
+  content.value = baseline;
+  content.dispatchEvent(new window.Event('input', { bubbles: true }));
+  click('[data-action="editor-back"]');
+  await waitFor(() => !document.querySelector('#editor-form'));
+  assert.equal(document.querySelector('#confirm-dialog').open, false);
+  assert.equal(stub.local['futurecontext.v1'].drafts['generic:normal:g1'], undefined);
+  click('[data-action="open-asset"][data-id="g1"]');
+  await waitFor(() => document.querySelector('#editor-form'));
+  assert.equal(document.querySelector('#editor-content').value, baseline);
+});
+
+test('failed draft deletion retains the editor and permits saving its current input', async () => {
+  click('[data-action="open-asset"][data-id="g1"]');
+  await waitFor(() => document.querySelector('#editor-form'));
+  const content = document.querySelector('#editor-content');
+  content.value = 'keep input after failed deletion';
+  content.dispatchEvent(new window.Event('input', { bubbles: true }));
+  await waitFor(() => stub.local['futurecontext.v1'].drafts['generic:normal:g1']?.content === content.value);
+  const originalSet = stub.chrome.storage.local.set;
+  stub.chrome.storage.local.set = async () => { throw new Error('draft deletion failed'); };
+  click('[data-action="editor-back"]');
+  confirmOpenDialog();
+  await waitFor(() => !document.querySelector('#editor-error').hidden);
+  assert.match(document.querySelector('#editor-error').textContent, /draft deletion failed/);
+  assert.equal(content.value, 'keep input after failed deletion');
+  assert.equal(document.querySelector('#editor-form [type="submit"]').disabled, false);
+  stub.chrome.storage.local.set = originalSet;
+  document.querySelector('#editor-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  await waitFor(() => !document.querySelector('#editor-form'));
+  assert.equal(stub.local['futurecontext.v1'].assets.find((asset) => asset.id === 'g1').content, 'keep input after failed deletion');
+});
+
 test('successful storage acknowledgement is not mistaken for failure by a later read', async () => {
   click('[data-action="new-asset"]');
   await waitFor(() => document.querySelector('#editor-form'));

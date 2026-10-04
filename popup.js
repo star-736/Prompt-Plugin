@@ -893,17 +893,17 @@ async function updatePackageCategory(categoryId) {
 }
 
 async function returnFromEditor() {
-  if (!state.editor || !editorChanged()) return finishEditorReturn(false);
+  if (!state.editor || !editorChanged()) return finishEditorReturn();
   showConfirm({
     title: '放弃未保存的更改',
     description: '放弃后，这次编辑草稿将被删除。',
     actionLabel: '放弃草稿',
     danger: true,
-    onConfirm: () => finishEditorReturn(true)
+    onConfirm: () => finishEditorReturn()
   });
 }
 
-async function finishEditorReturn(discard) {
+async function finishEditorReturn() {
   const editor = state.editor;
   if (editor?.saving || editor?.closing) return;
   try {
@@ -913,7 +913,9 @@ async function finishEditorReturn(discard) {
       editor.pendingDraft = null;
       updateEditorFeedback();
       await editor.draftTask;
-      if (discard) await commit((db) => discardDraft(db, editor.reference));
+      // Reverting to the baseline and immediately going back can cancel a
+      // queued draft deletion. Always clear any older draft before leaving.
+      await commit((db) => getDraft(db, editor.reference) ? discardDraft(db, editor.reference) : null);
     }
     state.editor = null;
     state.view = 'library';
