@@ -14,6 +14,7 @@ import {
 } from '../src/core/store.js';
 import { createChromeStub, createMemoryIndexedDB, seedDatabase } from './helpers.mjs';
 import { saveGitHubToken } from '../src/features/github/github-auth.js';
+import { getPackage, putPackage } from '../src/platform/package-store.js';
 
 const skill = `---\nname: Email reviewer\ndescription: Review email drafts\n---\n\n# Instructions\nReview the email.`;
 const encodedSkill = Buffer.from(skill).toString('base64');
@@ -52,7 +53,19 @@ const stub = createChromeStub({
 
 seedDatabase(stub.local, enableSites(createEmptyDatabase(), ['https://chatgpt.com']));
 
-const { NOTICE_KEY, handleRuntimeMessage, githubPageContext } = await import('../src/background/background.js');
+const { NOTICE_KEY, handleRuntimeMessage, githubPageContext, PACKAGE_RECOVERY_ALARM } = await import('../src/background/background.js');
+
+test('background recovery alarms remove abandoned packages and preserve future-version libraries', async () => {
+  seedDatabase(stub.local, createEmptyDatabase());
+  await putPackage({ id: 'interrupted-background', files: [] });
+  await Promise.all(stub.listeners.alarm.map((listener) => listener({ name: PACKAGE_RECOVERY_ALARM })));
+  assert.equal(await getPackage('interrupted-background'), null);
+  await putPackage({ id: 'future-background', files: [] });
+  seedDatabase(stub.local, { ...createEmptyDatabase(), version: 999 });
+  await Promise.all(stub.listeners.alarm.map((listener) => listener({ name: PACKAGE_RECOVERY_ALARM })));
+  assert.ok(await getPackage('future-background'));
+  seedDatabase(stub.local, createEmptyDatabase());
+});
 
 test('collect and update send the configured token to every GitHub API request', async () => {
   seedDatabase(stub.local, createEmptyDatabase());

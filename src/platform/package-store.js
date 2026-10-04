@@ -24,6 +24,11 @@ export async function deletePackage(id, indexedDb = globalThis.indexedDB) {
   await transact('readwrite', (store) => store.delete(id), indexedDb);
 }
 
+// Inventory only: recovery must not load all package file bytes into memory.
+export async function listPackageIds(indexedDb = globalThis.indexedDB) {
+  return transact('readonly', (store) => requestValue(store.getAllKeys()), indexedDb);
+}
+
 export async function exportPackages(packageIds, indexedDb = globalThis.indexedDB) {
   const packages = [];
   for (const id of new Set(packageIds.filter(Boolean))) {

@@ -76,6 +76,8 @@ npm run coverage
 
 源码按职责组织：`src/ui/` 为扩展页面，`src/background/` 为后台消息和任务，`src/content/` 为网页取用，`src/core/` 为数据模型和业务规则，`src/features/` 为 AI、GitHub 与 Agent 功能，`src/platform/` 为浏览器存储及扩展路径。测试保存在 `test/`，产品规格在 `docs/specs/`，设计决策在 `docs/adr/`。
 
+Skill 文件包与资产 JSON 分开持久保存。收集、更新、导入和同步在资料库写锁内先写包、再保存引用；中断或清理失败留下的无引用包，会在后台启动与五分钟恢复报警中重新核验引用并清理。已引用、进行中的包和更新版本的只读资料库受到保护；清理失败不影响已确认保存。浏览器调度可能延后清理，这不提供跨库原子事务，详见 [包恢复设计](./docs/adr/0013-recover-unreferenced-skill-packages-under-the-database-lock.md)。
+
 `npm run check` 递归检查源码、测试和工具脚本的语法及本地模块/页面资源引用，并校验 manifest 入口与共享路径一致。覆盖率检查包含整个 `src/`，最低行覆盖率为 92%；CI 使用 Node.js 24。
 
 发布包必须包含根目录 `manifest.json`、完整 `src/`、`icons/` 与 `vendor/`（含依赖许可证），并保持目录层级。开发用的 `node_modules/`、`test/`、`scripts/` 和 `.git/` 不需要打包。

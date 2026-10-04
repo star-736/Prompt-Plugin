@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { assertPackageLimits, buildPackageFileTree, deletePackage, exportPackages, FILE_LIMIT_BYTES, getPackage, importPackages, isTextFile, PACKAGE_LIMIT_BYTES, putPackage } from '../src/platform/package-store.js';
+import { assertPackageLimits, buildPackageFileTree, deletePackage, exportPackages, FILE_LIMIT_BYTES, getPackage, importPackages, isTextFile, listPackageIds, PACKAGE_LIMIT_BYTES, putPackage } from '../src/platform/package-store.js';
 import { createMemoryIndexedDB } from './helpers.mjs';
 
 test('isTextFile recognizes markdown, scripts, and JSON content types', () => {
@@ -22,6 +22,7 @@ test('IndexedDB package helpers put, get, export, import, and delete', async () 
   const indexedDb = createMemoryIndexedDB();
   const record = { id: 'pkg-1', files: [{ path: 'SKILL.md', content: 'abc', size: 3 }], fileCount: 1, totalSize: 3 };
   await putPackage(record, indexedDb);
+  assert.deepEqual(await listPackageIds(indexedDb), ['pkg-1']);
   assert.equal((await getPackage('pkg-1', indexedDb)).files[0].path, 'SKILL.md');
   assert.equal(await getPackage('missing', indexedDb), null);
   const exported = await exportPackages(['pkg-1', 'pkg-1', ''], indexedDb);

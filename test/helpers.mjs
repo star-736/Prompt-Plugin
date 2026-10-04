@@ -68,6 +68,10 @@ function requestOf(run) {
               if (pending <= 0) queueMicrotask(() => transaction.oncomplete?.());
             };
             const store = {
+              getAllKeys() {
+                pending += 1;
+                return requestOf(() => { finish(); return [...data.keys()]; });
+              },
               put(value) {
                 pending += 1;
                 return requestOf(() => {

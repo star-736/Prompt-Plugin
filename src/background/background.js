@@ -3,10 +3,19 @@ import { restrictLocalStorage } from '../features/github/github-auth.js';
 import { AI_ALARM, aiSessionStatus, clearAiSession, deleteProvider, processAiQueue, queueExisting, saveProvider, scheduleAi, testProvider, unlockAi } from './ai-worker.js';
 import { collectFromActiveTab, updateGitHubSkill } from './github-collection.js';
 import { CAPTURE_MENU_ID, captureFromMenu, ensureContextMenu, openPaletteInActiveTab, paletteInsert, paletteSettings, queryPalette, readNotice, syncContentScripts } from './palette-controller.js';
+import { recoverUnreferencedPackages } from '../features/skills/package-lifecycle.js';
 export { NOTICE_KEY } from './palette-controller.js';
 export { githubPageContext } from './github-collection.js';
 
 const CONTENT_SCRIPT_MESSAGES = Object.freeze(['palette-settings', 'palette-query', 'palette-insert']);
+export const PACKAGE_RECOVERY_ALARM = 'futurecontext.package-recovery';
+
+function recoverPackages() { return recoverUnreferencedPackages().catch(() => {}); }
+async function startPackageRecovery() {
+  // Alarms may disappear after a browser restart. Recreate on every worker load.
+  await chrome.alarms.create(PACKAGE_RECOVERY_ALARM, { periodInMinutes: 5 });
+  await recoverPackages();
+}
 
 function senderIsContentScript(sender) {
   const extensionRoot = chrome.runtime.getURL('');
@@ -69,3 +78,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
 chrome.alarms.onAlarm.addListener((alarm) => { if ([SYNC_ALARM, SYNC_DEBOUNCE_ALARM].includes(alarm.name)) void syncSettings().then((settings) => { if (settings.enabled && settings.automatic) return runLibrarySync(); }).catch(() => {}); });
 chrome.runtime.onStartup.addListener(() => { void scheduleLibrarySync(); });
 chrome.runtime.onInstalled.addListener(() => { void scheduleLibrarySync(); });
+chrome.alarms.onAlarm.addListener((alarm) => { if (alarm.name === PACKAGE_RECOVERY_ALARM) return recoverPackages(); });
+chrome.runtime.onStartup.addListener(() => { void startPackageRecovery().catch(() => {}); });
+chrome.runtime.onInstalled.addListener(() => { void startPackageRecovery().catch(() => {}); });
+void startPackageRecovery().catch(() => {});

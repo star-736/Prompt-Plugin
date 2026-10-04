@@ -1,5 +1,6 @@
 import { applyDatabaseChange, loadDatabase, isReadOnlyDatabase, CATEGORY_SCOPES, ASSET_TYPES, parseSkillMetadata, withDatabaseWriteLock } from '../../core/store.js';
-import { getPackage, putPackage, assertPackageLimits } from '../../platform/package-store.js';
+import { getPackage, putPackage, deletePackage, assertPackageLimits } from '../../platform/package-store.js';
+import { cleanupPackageCandidates } from '../skills/package-lifecycle.js';
 import { restrictLocalStorage } from './github-auth.js';
 
 export const SYNC_CONFIG_KEY = 'futurecontext.github-sync';
@@ -185,10 +186,11 @@ export function runLibrarySync(options = {}) {
   if (active) return active;
   active = performSync(options).finally(() => { active = null; }); return active;
 }
-async function performSync({ storage = chrome.storage.local, fetchImpl = fetch, readPackage = getPackage, writePackage = putPackage, locks } = {}) {
+async function performSync({ storage = chrome.storage.local, fetchImpl = fetch, readPackage = getPackage, writePackage = putPackage, removePackage = deletePackage, locks } = {}) {
   const config = (await storage.get(SYNC_CONFIG_KEY))[SYNC_CONFIG_KEY];
   if (!config?.enabled) return syncSettings(storage);
   cancellation = new AbortController(); const signal = cancellation.signal;
+  const packageCandidates = new Set();
   const assertCurrent = async () => { const latest = (await storage.get(SYNC_CONFIG_KEY))[SYNC_CONFIG_KEY]; if (signal.aborted || !same(config, latest)) throw new Error('同步设置已变更，本次同步已取消。'); };
   const status = async (state, message, extra = {}) => { await assertCurrent(); await storage.set({ [SYNC_STATUS_KEY]: { state, message, ...extra } }); };
   const request = async (path, options = {}) => {
@@ -240,12 +242,14 @@ async function performSync({ storage = chrome.storage.local, fetchImpl = fetch, 
       let finalConflicts = merged.conflicts; let privateConflictCount = merged.privateConflicts.length;
       const saved = await applyDatabaseChange(async (latest) => {
         await assertCurrent();
+        for (const asset of latest.assets) if (asset.skillPackage?.packageId) packageCandidates.add(asset.skillPackage.packageId);
         const current = await libraryRecords(latest, readPackage);
         const pulled = mergeLibrary(current, merged.records, local, [...(latest.syncWithdrawals ?? []), ...latest.assets.filter((a) => a.privacy === 'private').map((a) => a.id)]);
         finalConflicts += pulled.conflicts; privateConflictCount += pulled.privateConflicts.length;
         for (const record of Object.values(pulled.records)) if (record.value?.package) {
           const asset = record.value;
-          if (latest.assets.some((item) => item.id === asset.id && item.skillPackage?.packageId === packageIdFor(asset))) continue;
+          if (latest.assets.some((item) => item.skillPackage?.packageId === packageIdFor(asset))) continue;
+          packageCandidates.add(packageIdFor(asset));
           await writePackage({ id: packageIdFor(asset), files: asset.package.files, source: asset.package.source });
         }
         await assertCurrent();
@@ -260,7 +264,10 @@ async function performSync({ storage = chrome.storage.local, fetchImpl = fetch, 
   } catch (error) {
     try { const latest = (await storage.get(SYNC_CONFIG_KEY))[SYNC_CONFIG_KEY]; if (same(config, latest)) await storage.set({ [SYNC_STATUS_KEY]: { state: 'error', message: signal.aborted ? '同步已取消或网络超时，请重试；本地保存仍可使用。' : error.message } }); } catch { /* New config owns status. */ }
     throw error;
-  } finally { cancellation = null; }
+  } finally {
+    await cleanupPackageCandidates([...packageCandidates], { storage, removePackage, locks });
+    cancellation = null;
+  }
 }
 export async function scheduleLibrarySync({ changed = false, storage = chrome.storage.local, alarms = chrome.alarms } = {}) {
   const config = (await storage.get(SYNC_CONFIG_KEY))[SYNC_CONFIG_KEY];

@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { addStructureProposal, resolveStructureProposal, createEmptyDatabase, saveAsset, createCategory, applyDatabaseChange, loadDatabase, APP_STORAGE_KEY } from '../src/core/store.js';
 import { libraryRecords, validateSyncDocument, mergeLibrary, applyLibrary, configureSync, removeSyncConfiguration, syncSettings, runLibrarySync, scheduleLibrarySync, relevantLibraryChange, SYNC_CONFIG_KEY, SYNC_STATUS_KEY, SYNC_FORMAT, SYNC_PATH } from '../src/features/github/github-sync.js';
+import { deletePackage, getPackage, listPackageIds, putPackage } from '../src/platform/package-store.js';
+import { recoverUnreferencedPackages } from '../src/features/skills/package-lifecycle.js';
+import { createMemoryIndexedDB } from './helpers.mjs';
 
 function storageFor(database = createEmptyDatabase()) {
   const data = { [APP_STORAGE_KEY]: structuredClone(database) };
@@ -205,12 +208,68 @@ test('Skill package pull writes immutable local packages and preserves delivery/
   const db = createEmptyDatabase(); db.assets = [{ ...asset('skill', skill, 'skill'), skillPackage: { packageId: 'p', source }, useCount: 9, skillDelivery: { targets: {} } }];
   const records = await libraryRecords(db, async () => packageRecord());
   const storage = await configured(db); const server = api(records); const written = [];
-  await runLibrarySync({ storage, fetchImpl: server.fetchImpl, readPackage: async () => packageRecord(), writePackage: async (v) => written.push(v) });
+  const indexedDb = createMemoryIndexedDB();
+  await putPackage(packageRecord(), indexedDb);
+  const options = {
+    storage, fetchImpl: server.fetchImpl, readPackage: (id) => getPackage(id, indexedDb),
+    writePackage: async (v) => { written.push(v); await putPackage(v, indexedDb); }, removePackage: (id) => deletePackage(id, indexedDb)
+  };
+  await runLibrarySync(options);
   assert.equal(written.length, 1);
   const stored = (await loadDatabase(storage)).assets[0];
   assert.equal(stored.useCount, 9); assert.ok(stored.skillPackage.packageId.startsWith('sync-'));
   assert.equal(stored.skillPackage.source.defaultBranch, 'main');
   assert.equal(written[0].files[0].path, 'SKILL.md');
+  assert.equal(await getPackage('p', indexedDb), null);
+  assert.ok(await getPackage(stored.skillPackage.packageId, indexedDb));
+  const revision = (await loadDatabase(storage)).revision;
+  await runLibrarySync(options);
+  assert.equal((await loadDatabase(storage)).revision, revision);
+  assert.equal(written.length, 1);
+});
+
+test('failed sync reference saves and failed cleanup leave recoverable packages without changing local assets', async () => {
+  const remoteDb = createEmptyDatabase();
+  remoteDb.assets = [{ ...asset('skill', skill, 'skill'), skillPackage: { packageId: 'p', source } }];
+  const records = await libraryRecords(remoteDb, async () => packageRecord());
+  const storage = await configured(); const server = api(records); const indexedDb = createMemoryIndexedDB();
+  const set = storage.set;
+  storage.set = async (values) => { if (values[APP_STORAGE_KEY]) throw new Error('reference disk full'); await set(values); };
+  await assert.rejects(runLibrarySync({
+    storage, fetchImpl: server.fetchImpl, readPackage: (id) => getPackage(id, indexedDb),
+    writePackage: (v) => putPackage(v, indexedDb), removePackage: async () => { throw new Error('cleanup unavailable'); }
+  }), /reference disk full/);
+  assert.equal((await loadDatabase(storage)).assets.length, 0);
+  assert.equal((await listPackageIds(indexedDb)).length, 1);
+  assert.equal((await recoverUnreferencedPackages({ storage, listPackages: () => listPackageIds(indexedDb), removePackage: (id) => deletePackage(id, indexedDb) })).deleted, 1);
+});
+
+test('sync cleanup failure keeps the success status and restart recovery removes superseded packages', async () => {
+  const db = createEmptyDatabase(); db.assets = [{ ...asset('skill', skill, 'skill'), skillPackage: { packageId: 'p', source } }];
+  const records = await libraryRecords(db, async () => packageRecord());
+  const storage = await configured(db); const server = api(records); const indexedDb = createMemoryIndexedDB();
+  await putPackage(packageRecord(), indexedDb);
+  await runLibrarySync({ storage, fetchImpl: server.fetchImpl, readPackage: (id) => getPackage(id, indexedDb), writePackage: (v) => putPackage(v, indexedDb), removePackage: async () => { throw new Error('cleanup unavailable'); } });
+  assert.equal((await syncSettings(storage)).status.state, 'success');
+  assert.equal((await listPackageIds(indexedDb)).length, 2);
+  assert.equal((await recoverUnreferencedPackages({ storage, listPackages: () => listPackageIds(indexedDb), removePackage: (id) => deletePackage(id, indexedDb) })).deleted, 1);
+  assert.ok(await getPackage((await loadDatabase(storage)).assets[0].skillPackage.packageId, indexedDb));
+});
+
+test('cancelling sync after package preparation cleans files without publishing local references', async () => {
+  const remoteDb = createEmptyDatabase(); remoteDb.assets = [{ ...asset('skill', skill, 'skill'), skillPackage: { packageId: 'p', source } }];
+  const records = await libraryRecords(remoteDb, async () => packageRecord());
+  const storage = await configured(); const server = api(records); const indexedDb = createMemoryIndexedDB();
+  let cancelled;
+  await assert.rejects(runLibrarySync({
+    storage, fetchImpl: server.fetchImpl, readPackage: (id) => getPackage(id, indexedDb),
+    writePackage: async (v) => { await putPackage(v, indexedDb); cancelled = removeSyncConfiguration(storage); },
+    removePackage: (id) => deletePackage(id, indexedDb)
+  }), /已变更|取消/);
+  await cancelled;
+  assert.deepEqual((await loadDatabase(storage)).assets, []);
+  assert.deepEqual(await listPackageIds(indexedDb), []);
+  assert.equal((await syncSettings(storage)).status.message, '同步设置与 Token 已移除');
 });
 
 test('auto scheduling respects opt-out, periodic checks and durable debounce; relevant changes exclude drafts/usage/device data', async () => {
