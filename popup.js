@@ -121,7 +121,7 @@ if (!standaloneTab) {
   });
 }
 
-const labels = { generic: '通用 Prompt', skill: 'Skill', aigc: 'AIGC Prompt', command: '终端指令' };
+const labels = { generic: '通用 Prompt', skill: 'Skill', aigc: 'AIGC Prompt', command: '指令' };
 const state = {
   database: null,
   view: 'library',
@@ -500,8 +500,8 @@ function renderEditor() {
   const isCommand = type === 'command';
   const heading = existing ? `编辑${labels[type]}` : `新建${labels[type]}`;
   const titleField = type === 'generic' ? '<div class="field"><label>标题（可选）<input id="editor-title-input" maxlength="120" value="' + escapeHtml(values.title) + '" /></label></div>' : '';
-  const contentLabel = isSkill ? 'SKILL.md' : isCommand ? '命令' : '内容';
-  const contentHelp = isSkill ? '<p class="form-help">保存时会校验 YAML frontmatter 中的 name 与 description。</p>' : '';
+  const contentLabel = isSkill ? 'SKILL.md' : isCommand ? '指令' : '内容';
+  const contentHelp = isSkill ? '<p class="form-help">保存时会校验 YAML frontmatter 中的 name 与 description。</p>' : isCommand ? '<p class="form-help">可保存终端命令或浏览器指令，例如 <code>git pull</code>、<code>chrome://restart</code>。</p>' : '';
   const management = existing?.type === 'aigc' ? `<div class="secondary-management">
       <button class="button button-ghost button-small" type="button" data-action="move-asset" data-id="${existing.id}" data-target="${existing.privacy === 'private' ? 'normal' : 'private'}">${existing.privacy === 'private' ? '移出私密库' : '移入私密库'}</button>
       <button class="button button-danger button-small" type="button" data-action="delete-asset" data-id="${existing.id}">永久删除</button>

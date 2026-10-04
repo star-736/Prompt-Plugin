@@ -100,7 +100,7 @@ test('asset validation accepts a title-less generic Prompt and preserves Skill v
   assert.throws(() => saveAsset(savedAigc.database, { type: 'skill', privacy: 'private', content: skill }), /只有 AIGC/);
 });
 
-test('terminal command assets are content-first, categorizable, searchable, and stay local', () => {
+test('command assets are content-first, categorizable, searchable, and stay local', () => {
   let database = createEmptyDatabase();
   assert.equal(scopeFor('command'), 'command');
   assert.throws(() => scopeFor('command', 'private'), /只有 AIGC/);
@@ -136,7 +136,7 @@ test('terminal command assets are content-first, categorizable, searchable, and 
   assert.equal(database.assets.find((asset) => asset.id === 'cmd-plain').categorySource, 'manual');
   assert.throws(() => setAssetCategory(database, 'cmd-plain', 'no-such'), /找不到该分类/);
 
-  // Terminal commands never enter the AI queue even when background AI is enabled.
+  // Commands never enter the AI queue even when background AI is enabled.
   database = updateAiSettings(database, { enabled: true });
   database = saveAsset(database, { id: 'cmd-cat', type: 'command', content: 'codex --dangerously-bypass-approvals-and-sandbox v2', categoryId: cat.category.id }, { now: 3 }).database;
   assert.equal(database.ai.queue.length, 0);
@@ -151,7 +151,7 @@ test('terminal command assets are content-first, categorizable, searchable, and 
   assert.equal(paletteAssets(database, '', 8, { types: ['generic', 'skill'] }).some((asset) => asset.type === 'command'), false);
 });
 
-test('backup round-trips terminal commands and their categories, and re-import is idempotent', () => {
+test('backup round-trips commands and their categories, and re-import is idempotent', () => {
   let db = createEmptyDatabase();
   const cat = createCategory(db, 'command', 'AI Agent 更新');
   db = cat.database;
@@ -495,7 +495,7 @@ test('assetsFor matches by category name, aligning the popup list with the in-pl
   // Title/content search still works.
   assert.deepEqual(assetsFor(database, { type: 'generic', query: '牛奶' }).map((a) => a.id), ['g-misc']);
 
-  // Same behavior for terminal commands.
+  // Same behavior for commands.
   const browser = createCategory(database, 'command', '浏览器');
   database = browser.database;
   database = saveAsset(database, { type: 'command', content: 'chrome://restart', categoryId: browser.category.id }, { now: 3, id: 'cmd-br' }).database;

@@ -321,7 +321,7 @@ export function applyDiskDeliveries(database, updates) {
 export function setAssetCategory(database, id, categoryId, { now = Date.now() } = {}) {
   const next = normalizeDatabase(clone(database)); const index = next.assets.findIndex((asset) => asset.id === id); if (index < 0) throw new Error('找不到该条目。');
   const asset = next.assets[index];
-  if (!['generic', 'skill', 'command'].includes(asset.type) || asset.privacy !== 'normal') throw new Error('只有普通库的 Prompt、Skill 和终端指令可以分类。');
+  if (!['generic', 'skill', 'command'].includes(asset.type) || asset.privacy !== 'normal') throw new Error('只有普通库的 Prompt、Skill 和指令可以分类。');
   const nextCategoryId = categoryId || null;
   if (nextCategoryId && !next.categories.some((category) => category.id === nextCategoryId && category.scope === asset.type)) throw new Error('找不到该分类。');
   next.assets[index] = { ...asset, categoryId: nextCategoryId, categorySource: 'manual', updatedAt: now };
