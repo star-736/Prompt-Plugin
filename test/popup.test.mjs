@@ -718,17 +718,17 @@ test('successful storage acknowledgement is not mistaken for failure by a later 
   assert.equal(stub.local['futurecontext.v1'].assets.filter((asset) => asset.content === 'already saved').length, 1);
 });
 
-test('terminal command tab: content-first create, categorize, list, and copy', async () => {
+test('command tab: terminal and browser commands share categorization and original-text copying', async () => {
   click('[data-tab="command"]');
   await waitFor(() => document.querySelector('[data-tab="command"].is-active'));
-  assert.match(document.querySelector('#app').innerHTML, /暂无终端指令/);
+  assert.match(document.querySelector('#app').innerHTML, /暂无指令/);
 
   click('[data-action="new-asset"]');
   await waitFor(() => document.querySelector('#editor-form'));
-  // Terminal commands are content-first: no title field, just a category and the command body.
+  // Commands are content-first: no title field, just a category and the body.
   assert.equal(document.querySelector('#editor-title-input'), null);
   assert.ok(document.querySelector('#editor-category'));
-  assert.match(document.querySelector('.editor-form').innerHTML, /命令/);
+  assert.match(document.querySelector('.editor-form').textContent, /终端命令或浏览器指令/);
 
   document.querySelector('#editor-content').value = 'codex --dangerously-bypass-approvals-and-sandbox';
   document.querySelector('#editor-content').dispatchEvent(new window.Event('input', { bubbles: true }));
@@ -746,6 +746,27 @@ test('terminal command tab: content-first create, categorize, list, and copy', a
   assert.match(document.querySelector('.asset-list').innerHTML, /AI Agent/);
   click('[data-action="copy-asset"]');
   await waitFor(() => /复制/.test(toastText()));
+  assert.equal(await window.navigator.clipboard.readText(), 'codex --dangerously-bypass-approvals-and-sandbox');
+
+  click('[data-action="new-asset"]');
+  await waitFor(() => document.querySelector('#editor-form'));
+  document.querySelector('#editor-content').value = 'chrome://restart';
+  document.querySelector('#editor-content').dispatchEvent(new window.Event('input', { bubbles: true }));
+  click('[data-action="new-category-from-editor"]');
+  await waitFor(() => document.querySelector('#editor-new-category'));
+  document.querySelector('#editor-new-category').value = '浏览器指令';
+  click('[data-action="create-category-from-editor"]');
+  await waitFor(() => document.querySelector('#editor-category')?.selectedOptions[0]?.textContent === '浏览器指令');
+  document.querySelector('#editor-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  await waitFor(() => !document.querySelector('#editor-form'));
+  const browser = stub.local['futurecontext.v1'].assets.find((asset) => asset.content === 'chrome://restart');
+  assert.equal(browser.type, 'command');
+  click('[data-action="toggle-category-menu"]');
+  click(`[data-category="${browser.categoryId}"]`);
+  assert.equal(document.querySelectorAll('.asset-command-content').length, 1);
+  assert.equal(document.querySelector('.asset-command-content').textContent, 'chrome://restart');
+  click(`[data-action="copy-asset"][data-id="${browser.id}"]`);
+  await waitFor(async () => await window.navigator.clipboard.readText() === 'chrome://restart');
 });
 
 test('open GitHub skill package, update, and delete with confirm', async () => {
@@ -1043,7 +1064,7 @@ test('read-only import refuses to overwrite the database', async () => {
   assert.deepEqual(stub.local['futurecontext.v1'], before);
 });
 
-test('category picker is hidden on AIGC and shown on terminal commands', async () => {
+test('category picker is hidden on AIGC and shown on commands', async () => {
   click('[data-tab="aigc"]');
   await waitFor(() => document.querySelector('[data-privacy="normal"]'));
   assert.equal(document.querySelector('[data-action="toggle-category-menu"]'), null);
