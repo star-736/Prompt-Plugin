@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { dirname, extname, join, resolve } from 'node:path';
+import { dirname, extname, join, relative, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { EXTENSION_PATHS } from '../src/platform/extension-paths.js';
+import { Script } from 'node:vm';
+import { EXTENSION_PATHS } from '../dist/platform/extension-paths.js';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 
@@ -25,7 +26,22 @@ for (const path of [...Object.values(EXTENSION_PATHS), ...Object.values(manifest
   requireFile(join(root, path), 'manifest / extension paths');
 }
 
-const files = ['src', 'test', 'scripts'].flatMap((directory) => filesIn(join(root, directory)));
+const files = ['src', 'dist', 'test', 'scripts'].flatMap((directory) => filesIn(join(root, directory)));
+const sourceRoot = join(root, 'src');
+const outputRoot = join(root, 'dist');
+const sourceFiles = filesIn(sourceRoot);
+const sources = sourceFiles.filter((path) => extname(path) === '.ts' && !path.endsWith('.d.ts'));
+assert.ok(sources.length > 0, 'Expected TypeScript application sources.');
+for (const path of sources) requireFile(join(outputRoot, relative(sourceRoot, path).replace(/\.ts$/, '.js')), path);
+assert.ok(!sourceFiles.some((path) => ['.js', '.mjs'].includes(extname(path))), 'Application source must be TypeScript.');
+// Dynamic registration requires a classic script, even though other entries use ESM.
+new Script(readFileSync(join(root, EXTENSION_PATHS.palette), 'utf8'), { filename: EXTENSION_PATHS.palette });
+for (const [page, entry] of [[EXTENSION_PATHS.popup, 'dist/ui/popup/popup.js'], [EXTENSION_PATHS.deliver, 'dist/ui/deliver/deliver.js']]) {
+  const html = readFileSync(join(root, page), 'utf8');
+  const modules = [...html.matchAll(/<script\b[^>]*type=["']module["'][^>]*src=["']([^"']+)["']/g)];
+  assert.equal(modules.length, 1, `${page}: expected one compiled module entry`);
+  assert.equal(resolve(dirname(join(root, page)), modules[0][1]), join(root, entry));
+}
 let scripts = 0;
 for (const path of files) {
   const extension = extname(path);
@@ -48,4 +64,4 @@ for (const path of files) {
   }
 }
 
-console.log(`Checked ${scripts} JavaScript files, manifest entries, and local module/page resources.`);
+console.log(`Checked ${sources.length} TypeScript sources, ${scripts} JavaScript files, manifest entries, and local module/page resources.`);

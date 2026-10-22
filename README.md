@@ -4,11 +4,12 @@
 
 ## 安装与开始使用
 
-1. 打开 `edge://extensions`（Chrome 使用 `chrome://extensions`），开启“开发人员模式”。
-2. 点击“加载解压缩的扩展”，选择本项目根目录（包含 `manifest.json`）。
-3. 将 FutureContext 固定到工具栏，点击图标即可开始使用。
+1. 本地源码首次使用先运行 `npm ci` 和 `npm run build`（需要 Node.js 24 或更新版本）。
+2. 打开 `edge://extensions`（Chrome 使用 `chrome://extensions`），开启“开发人员模式”。
+3. 点击“加载解压缩的扩展”，选择本项目根目录（包含 `manifest.json`）。
+4. 将 FutureContext 固定到工具栏，点击图标即可开始使用。
 
-扩展无需构建。点击右上角“在新标签页中打开”，可在更大的工作区中编辑和阅读 Skill。
+源码为 TypeScript，编译后的 JavaScript 位于 `dist/`；扩展仍从仓库根目录加载。点击右上角“在新标签页中打开”，可在更大的工作区中编辑和阅读 Skill。
 
 ## 主要功能
 
@@ -30,16 +31,20 @@
 
 ## 开发与验证
 
-使用原生 JavaScript ES Modules、HTML、CSS 与 Manifest V3，无应用构建步骤。CI 使用 Node.js 24。
+使用 TypeScript、原生 ES Modules、HTML、CSS 与 Manifest V3，通过 `tsc` 编译，不使用框架或打包器。CI 使用 Node.js 24。
 
 ```sh
 npm ci
+npm run build
+npm run typecheck
 npm run check
 npm test
 npm run coverage
 ```
 
-`check` 检查 JavaScript 语法、模块与页面资源引用及入口路径；覆盖率最低要求为 92%。
+`build` 清理并编译 `src/**/*.ts` 到 `dist/`，保留目录结构与 `.js` 模块导入路径。`dev` 持续编译，修改后在扩展管理页重新加载。`typecheck` 只检查类型；`check` 先构建，再检查产物语法、模块与页面资源引用及入口路径。`test` 和 `coverage` 自动先构建，测试实际编译产物；覆盖率最低要求为 92%。
+
+核心数据、文件包、存储适配器和页面会话的类型集中在对应 TypeScript 模块。当前采用兼容迁移配置，暂未启用 `noImplicitAny` 和严格空值检查；外部数据仍经过原有运行时校验，类型声明不会替代数据校验。测试和开发工具保留 `.mjs`，第三方 Markdown 运行时继续从 `vendor/` 加载。
 
 源码位于 `src/`，按 `core`（模型与资料库）、`platform`（浏览器存储）、`features`（功能服务）、`background`（后台）、`content`（网页取用）、`ui`（页面）组织；测试位于 `test/`。
 

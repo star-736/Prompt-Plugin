@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { APP_STORAGE_KEY, applyDatabaseChange, createEmptyDatabase, loadDatabase, saveGithubSkillAsset } from '../src/core/store.js';
-import { commitGithubSkillPackage, importBackupRecords, removeAssetAndPackage } from '../src/features/skills/package-operations.js';
-import { cleanupPackageCandidates, recoverUnreferencedPackages } from '../src/features/skills/package-lifecycle.js';
-import { deletePackage, getPackage, listPackageIds, putPackage } from '../src/platform/package-store.js';
+import { APP_STORAGE_KEY, applyDatabaseChange, createEmptyDatabase, loadDatabase, saveGithubSkillAsset } from '../dist/core/store.js';
+import { commitGithubSkillPackage, importBackupRecords, removeAssetAndPackage } from '../dist/features/skills/package-operations.js';
+import { cleanupPackageCandidates, recoverUnreferencedPackages } from '../dist/features/skills/package-lifecycle.js';
+import { deletePackage, getPackage, listPackageIds, putPackage } from '../dist/platform/package-store.js';
 import { createMemoryIndexedDB, loadFreshEntry } from './helpers.mjs';
 
 const skillContent = '---\nname: recovery\ndescription: test recovery\n---\n# Instructions';
@@ -30,7 +30,7 @@ test('a fresh recovery instance discovers an interrupted preparation without a p
     await putPackage(pkg('abandoned'), indexedDb);
     throw new Error('context interrupted before reference save');
   }, storage), /interrupted/);
-  const restarted = await loadFreshEntry('../src/features/skills/package-lifecycle.js');
+  const restarted = await loadFreshEntry('../dist/features/skills/package-lifecycle.js');
   assert.deepEqual(await restarted.recoverUnreferencedPackages(recovery), { deleted: 1, failed: 0, readOnly: false });
   assert.equal(await getPackage('abandoned', indexedDb), null);
   assert.deepEqual(await recoverUnreferencedPackages(recovery), { deleted: 0, failed: 0, readOnly: false });

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { chatCompletion, buildAssetOrganizationPrompt } from '../src/features/ai/ai-organizer.js';
+import { chatCompletion, buildAssetOrganizationPrompt } from '../dist/features/ai/ai-organizer.js';
 import { createProviderServer, completion, FIXTURE_PROVIDER_URL, FIXTURE_KEY } from './fixtures/provider-server.mjs';
 
 const provider = { baseUrl: FIXTURE_PROVIDER_URL, model: 'synthetic-model' };

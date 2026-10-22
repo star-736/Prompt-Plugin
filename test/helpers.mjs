@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SourceTextModule, SyntheticModule } from 'node:vm';
 import { JSDOM } from 'jsdom';
-import { APP_STORAGE_KEY, createEmptyDatabase, normalizeDatabase } from '../src/core/store.js';
+import { APP_STORAGE_KEY, createEmptyDatabase, normalizeDatabase } from '../dist/core/store.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 

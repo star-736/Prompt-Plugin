@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createChromeStub } from './helpers.mjs';
-import { SYNC_SETTINGS_DRAFT_KEY, readSyncSettingsDraft, writeSyncSettingsDraft, discardSyncSettingsDraft, submitSyncSettings } from '../src/background/sync-settings-draft.js';
+import { SYNC_SETTINGS_DRAFT_KEY, readSyncSettingsDraft, writeSyncSettingsDraft, discardSyncSettingsDraft, submitSyncSettings } from '../dist/background/sync-settings-draft.js';
 
 test('draft stays in trusted session storage and failed submission keeps input', async () => {
   const stub = createChromeStub();

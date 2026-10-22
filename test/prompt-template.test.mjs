@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { parsePromptTemplate, fillPromptTemplate, promptTemplateEnabled } from '../src/core/prompt-template.js';
-import { createEmptyDatabase, saveAsset, createBackup, mergeBackup, moveAigcAsset, CURRENT_DATABASE_VERSION } from '../src/core/store.js';
-import { libraryRecords, validateSyncDocument, SYNC_FORMAT } from '../src/features/github/github-sync.js';
+import { parsePromptTemplate, fillPromptTemplate, promptTemplateEnabled } from '../dist/core/prompt-template.js';
+import { createEmptyDatabase, saveAsset, createBackup, mergeBackup, moveAigcAsset, CURRENT_DATABASE_VERSION } from '../dist/core/store.js';
+import { libraryRecords, validateSyncDocument, SYNC_FORMAT } from '../dist/features/github/github-sync.js';
 
 test('plain templates support Chinese names, spacing, repeat values and literal replacement text', () => {
   const template = parsePromptTemplate('给 {{ 角色 }}：{{内容}}\n再次称呼 {{角色}}');
@@ -66,7 +66,7 @@ test('sync whitelists template mode while excluding filled values and rejecting 
 
 test('web template preparation is read-only and final insertion validates latest mode, content and permissions', async () => {
   const { createChromeStub, seedDatabase } = await import('./helpers.mjs');
-  const { preparePaletteTemplate, paletteInsert, recordPaletteUse } = await import('../src/background/palette-controller.js');
+  const { preparePaletteTemplate, paletteInsert, recordPaletteUse } = await import('../dist/background/palette-controller.js');
   const stub = createChromeStub();
   let database = saveAsset(createEmptyDatabase(), { type: 'generic', content: '总结 {{主题}}', templateEnabled: true }, { id: 't' }).database;
   database.settings.inPlace.sites = ['https://chatgpt.com'];

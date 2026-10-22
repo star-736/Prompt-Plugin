@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { getPackage } from '../src/platform/package-store.js';
-import { getBinding } from '../src/features/agents/agent-folders.js';
+import { getPackage } from '../dist/platform/package-store.js';
+import { getBinding } from '../dist/features/agents/agent-folders.js';
 
 // Unlike the simple record fixture, this adapter separates request success
 // from transaction commit and exposes transaction failures and connection close.

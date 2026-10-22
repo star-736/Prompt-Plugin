@@ -2,17 +2,17 @@
 
 ## 项目与资料
 
-FutureContext 是本地优先的 Chrome / Edge Manifest V3 扩展，管理提示词、Skill、私密 AIGC 和终端指令。使用原生 JavaScript ES Modules、HTML、CSS，没有应用构建步骤。
+FutureContext 是本地优先的 Chrome / Edge Manifest V3 扩展，管理提示词、Skill、私密 AIGC 和终端指令。使用 TypeScript、原生 ES Modules、HTML、CSS，以 `tsc` 编译到 `dist/`，不使用应用框架或打包器。
 
 - 先阅读 [README.md](README.md) 和 [docs/CONTEXT.md](docs/CONTEXT.md)，再按任务追踪实际源码、测试与调用者。
 - 文档入口见 [docs/README.md](docs/README.md)；当前产品规格为 [docs/specs/SPEC.md](docs/specs/SPEC.md)，同步技术细节见 `docs/specs/SPEC_GITHUB_SYNC.md`，关键设计决策位于 `docs/adr/`。阶段背景合并在 `docs/specs/HISTORY.md`；遇到历史描述与当前行为不一致，应验证代码并说明差异。
-- 扩展从仓库根目录的 `manifest.json` 加载。`vendor/` 保存运行时使用的 Markdown 依赖及许可证；升级依赖时同时检查随扩展分发的文件，不引入运行时 CDN。
+- 扩展从仓库根目录的 `manifest.json` 加载。首次加载前运行 `npm run build`；Service Worker、页面模块与动态内容脚本均指向 `dist/` 中的 JavaScript，HTML / CSS 保留在 `src/`。源码导入继续使用 `.js` 后缀，TypeScript 在编译时解析对应 `.ts`。`vendor/` 保存运行时使用的 Markdown 依赖及许可证；升级依赖时同时检查随扩展分发的文件，不引入运行时 CDN。
 
 ## 模块边界
 
 | 目录 | 职责 |
 | --- | --- |
-| `src/core/` | 数据模型、资料库规则、加密，以及兼容的 `store.js` 公共入口 |
+| `src/core/` | 数据模型、资料库规则、加密，以及兼容的 `store.ts` 公共入口 |
 | `src/platform/` | Chrome storage、IndexedDB 和扩展资源路径 |
 | `src/features/` | AI 整理、GitHub 收集与同步、Skill 文件包和 Agent 投递 |
 | `src/background/` | Service Worker 入口、消息分发和后台任务协调 |
@@ -23,8 +23,8 @@ FutureContext 是本地优先的 Chrome / Edge Manifest V3 扩展，管理提示
 - 保持模型和资料库规则可独立测试；浏览器 API 与 DOM 副作用放在相应平台、服务或页面模块。
 - 共享服务导入时不得自动绑定页面事件或初始化页面。入口负责装配，功能模块通过明确的参数和回调协作，避免循环依赖。
 - 拆分应围绕完整职责和状态生命周期，避免只搬代码、增加无收益的转发层，或默认引入框架和新依赖。
-- `src/core/store.js` 的公共导出需要检查所有调用者后再变更。调整入口路径时同步检查 `manifest.json`、`src/platform/extension-paths.js`、HTML 和动态脚本注册。
-- 内容脚本按经典脚本加载；不能直接套用其他源码的 ES Module 导入方式。
+- `src/core/store.ts` 的公共导出需要检查所有调用者后再变更。调整入口路径时同步检查 `manifest.json`、`src/platform/extension-paths.ts`、HTML 和动态脚本注册。
+- 内容脚本按经典脚本加载；不能直接套用其他源码的 ES Module 导入方式。类型引用可使用 `import("…").Type`，不得使编译产物带上 `import` / `export`。
 
 ## 数据与并发约束
 
@@ -63,12 +63,14 @@ FutureContext 是本地优先的 Chrome / Edge Manifest V3 扩展，管理提示
 使用 npm；CI 使用 Node.js 24。安装依赖运行 `npm ci`。
 
 ```sh
+npm run build
+npm run typecheck
 npm run check
 npm test
 npm run coverage
 ```
 
-- `check` 检查 JavaScript 语法、本地模块和 HTML 资源引用，以及入口路径一致性；仓库没有独立的 lint、typecheck 或 build 命令。
+- `build` 清理并编译 `src/**/*.ts` 到 `dist/`；`dev` 持续编译；`typecheck` 只检查类型。`check` 先构建，再检查产物语法、模块 / HTML 资源引用及入口路径一致性。`test` / `coverage` 自动构建并测试编译产物。当前保留兼容迁移配置，未启用 `noImplicitAny` 与严格空值检查，不得使用 `@ts-nocheck` 绕过已有类型检查。仓库没有独立的 lint 命令。
 - 重要代码重构运行以上检查；覆盖率保留项目现有 92% 行覆盖率门槛。小改动按影响范围选择验证，纯文档修改检查准确性与链接即可。
 - 新增测试覆盖行为、边界或回归风险，避免仅复述实现细节。浏览器 API、存储和外部服务的测试通过注入依赖控制。
 - 页面、权限、内容脚本或投递生命周期变更需要相应浏览器验证：在隔离配置中加载仓库根目录，检查输入与草稿、跨页面并发、只读模式、脚本注册或目录行为。

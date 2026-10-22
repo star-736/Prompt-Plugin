@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { APP_STORAGE_KEY, createEmptyDatabase, saveAsset } from '../src/core/store.js';
-import { SYNC_FORMAT, SYNC_PATH } from '../src/features/github/github-sync.js';
+import { APP_STORAGE_KEY, createEmptyDatabase, saveAsset } from '../dist/core/store.js';
+import { SYNC_FORMAT, SYNC_PATH } from '../dist/features/github/github-sync.js';
 import {
   assertDisposableFixture, cleanupLiveFile, createLiveDevice, createLiveTransport,
   LIVE_FIXTURE_FORMAT, LIVE_FIXTURE_PATH, parseLiveArguments, runGitHubLive, safeLiveError, validateLiveConfig

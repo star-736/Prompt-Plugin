@@ -5,13 +5,13 @@ import { fileURLToPath } from 'node:url';
 import {
   APP_STORAGE_KEY, applyDatabaseChange, createEmptyDatabase, createCategory,
   loadDatabase, moveAigcAsset, saveAsset, saveGithubSkillAsset
-} from '../src/core/store.js';
-import { githubFetch, saveGitHubToken } from '../src/features/github/github-auth.js';
-import { checkGitHubSkillUpdate, collectGitHubSkill } from '../src/features/github/github-skill.js';
+} from '../dist/core/store.js';
+import { githubFetch, saveGitHubToken } from '../dist/features/github/github-auth.js';
+import { checkGitHubSkillUpdate, collectGitHubSkill } from '../dist/features/github/github-skill.js';
 import {
   configureSync, libraryRecords, removeSyncConfiguration, runLibrarySync,
   SYNC_FORMAT, SYNC_PATH, syncSettings, validateSyncDocument
-} from '../src/features/github/github-sync.js';
+} from '../dist/features/github/github-sync.js';
 
 export const LIVE_FIXTURE_PATH = '.futurecontext/github-live-fixture.json';
 export const LIVE_FIXTURE_FORMAT = 'futurecontext.github-live-fixture';

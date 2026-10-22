@@ -64,7 +64,7 @@ import {
   usageSummary,
   validateAsset,
   verifyPrivacyPassword
-} from '../src/core/store.js';
+} from '../dist/core/store.js';
 
 const skill = `---\nname: Email reviewer\ndescription: Review email drafts\n---\n\n# Instructions\nReview the email.`;
 
@@ -767,7 +767,7 @@ test('simultaneous snapshot saves reject the stale writer instead of both succee
 });
 
 test('independent store modules share the browser lock across storage wrappers', async () => {
-  const otherStore = await loadFreshEntry('../src/platform/database-storage.js');
+  const otherStore = await loadFreshEntry('../dist/platform/database-storage.js');
   const storage = memoryStorage();
   const otherStorage = { get: storage.get.bind(storage), set: storage.set.bind(storage) };
   let tail = Promise.resolve();

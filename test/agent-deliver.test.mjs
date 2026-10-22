@@ -22,11 +22,11 @@ import {
   skillFolderCandidates,
   skillSlug,
   skillYamlName
-} from '../src/features/agents/agent-deliver.js';
-import { canReadHandle, ensureReadWrite, indexSkillDirectories, listChildDirectories, recallDelivery, resolveSkillsDirectory, scanSkillPresence, writeDelivery } from '../src/features/agents/agent-fs.js';
-import { deleteBinding, getBinding, listBindings, putBinding } from '../src/features/agents/agent-folders.js';
-import { runDeliverAction } from '../src/features/agents/delivery-service.js';
-import { applyDiskDeliveries, clearSkillDeliveryTarget, createBackup, createEmptyDatabase, mergeBackup, saveAsset, setSkillDeliveryTarget } from '../src/core/store.js';
+} from '../dist/features/agents/agent-deliver.js';
+import { canReadHandle, ensureReadWrite, indexSkillDirectories, listChildDirectories, recallDelivery, resolveSkillsDirectory, scanSkillPresence, writeDelivery } from '../dist/features/agents/agent-fs.js';
+import { deleteBinding, getBinding, listBindings, putBinding } from '../dist/features/agents/agent-folders.js';
+import { runDeliverAction } from '../dist/features/agents/delivery-service.js';
+import { applyDiskDeliveries, clearSkillDeliveryTarget, createBackup, createEmptyDatabase, mergeBackup, saveAsset, setSkillDeliveryTarget } from '../dist/core/store.js';
 import { click, createChromeStub, createMemoryDirectory, createMemoryIndexedDB, deliverHtml, installDom, loadFreshEntry, seedDatabase, waitFor, writeMemoryFile } from './helpers.mjs';
 
 const skill = `---\nname: Email reviewer\ndescription: Review email drafts\n---\n\n# Instructions\nReview the email.`;
@@ -217,7 +217,7 @@ test('bootDeliver auto-runs, can pick a folder, and closes', async () => {
   let picked = 0;
   globalThis.showDirectoryPicker = async () => { picked += 1; return root; };
   globalThis.close = () => { window.closedFlag = true; };
-  await loadFreshEntry('../src/ui/deliver/deliver.js');
+  await loadFreshEntry('../dist/ui/deliver/deliver.js');
   await waitFor(() => /选择 skills 目录/.test(document.querySelector('#app')?.textContent || ''));
   assert.equal(picked, 0);
   click('[data-action="pick-folder"]');
@@ -238,7 +238,7 @@ test('bootDeliver deliver with a granted folder auto-runs without picking', asyn
   installDom(deliverHtml(), { url: 'https://futurecontext.test/deliver.html?action=deliver&target=claude&assetId=s1' });
   let picked = 0;
   globalThis.showDirectoryPicker = async () => { picked += 1; return root; };
-  await loadFreshEntry('../src/ui/deliver/deliver.js');
+  await loadFreshEntry('../dist/ui/deliver/deliver.js');
   await waitFor(() => /已投递到/.test(globalThis.document?.querySelector('#app')?.textContent || ''));
   assert.equal(picked, 0);
   delete globalThis.showDirectoryPicker;
@@ -256,7 +256,7 @@ test('bootDeliver deliver does not re-prompt a bound folder that lost write acce
   installDom(deliverHtml(), { url: 'https://futurecontext.test/deliver.html?action=deliver&target=claude&assetId=s1' });
   let picked = 0;
   globalThis.showDirectoryPicker = async () => { picked += 1; return createMemoryDirectory(); };
-  await loadFreshEntry('../src/ui/deliver/deliver.js');
+  await loadFreshEntry('../dist/ui/deliver/deliver.js');
   await waitFor(() => /允许访问/.test(globalThis.document?.querySelector('#app')?.textContent || ''));
   assert.equal(picked, 0);
   assert.equal(permissionPrompts, 0);
@@ -269,7 +269,7 @@ test('bootDeliver deliver does not re-prompt a bound folder that lost write acce
 
 test('bootDeliver reports missing parameters', async () => {
   installDom(deliverHtml(), { url: 'https://futurecontext.test/deliver.html?action=deliver' });
-  await loadFreshEntry('../src/ui/deliver/deliver.js');
+  await loadFreshEntry('../dist/ui/deliver/deliver.js');
   await waitFor(() => /缺少投递参数/.test(document.querySelector('#app')?.textContent || ''));
 });
 
@@ -280,7 +280,7 @@ test('bootDeliver bind waits for an explicit folder pick', async () => {
   const { clipboard } = installDom(deliverHtml(), { url: 'https://futurecontext.test/deliver.html?action=bind&target=agents' });
   let picked = 0;
   globalThis.showDirectoryPicker = async () => { picked += 1; return root; };
-  await loadFreshEntry('../src/ui/deliver/deliver.js');
+  await loadFreshEntry('../dist/ui/deliver/deliver.js');
   await waitFor(() => /选择本身不会写入/.test(document.querySelector('#app')?.textContent || ''));
   assert.match(document.querySelector('#app').textContent, /地址栏|Command\+Shift\+G/);
   assert.equal(document.querySelector('[data-action="copy-path"]')?.textContent, '复制路径');
@@ -480,6 +480,6 @@ test('delivery service refuses future-version databases before touching local fi
 test('importing delivery service does not boot a delivery page', async () => {
   const { document } = installDom(deliverHtml(), { url: 'https://futurecontext.test/deliver.html?action=bind&target=agents' });
   document.querySelector('#app').textContent = 'Page has not started';
-  await loadFreshEntry('../src/features/agents/delivery-service.js');
+  await loadFreshEntry('../dist/features/agents/delivery-service.js');
   assert.equal(document.querySelector('#app').textContent, 'Page has not started');
 });

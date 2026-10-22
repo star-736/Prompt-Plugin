@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { normalizeSiteOrigin, sitePattern, siteHost, originOfUrl, shouldTrigger, slashCompletesTrigger, inlineAnchorQuery, INLINE_DISMISS_MS, SHORTCUT_LABEL, SITE_PRESETS, isPromptableSite, isRestrictedTabUrl, relatedMatchPatterns, originCoveredBySites, inPlaceAllowsOrigin, livePaletteUpdate, paletteTypesForUrl, patternsForSites, presetFor } from '../src/content/in-place.js';
-import { createEmptyDatabase, disableSite, enableSite, updateInPlaceSettings } from '../src/core/store.js';
+import { normalizeSiteOrigin, sitePattern, siteHost, originOfUrl, shouldTrigger, slashCompletesTrigger, inlineAnchorQuery, INLINE_DISMISS_MS, SHORTCUT_LABEL, SITE_PRESETS, isPromptableSite, isRestrictedTabUrl, relatedMatchPatterns, originCoveredBySites, inPlaceAllowsOrigin, livePaletteUpdate, paletteTypesForUrl, patternsForSites, presetFor } from '../dist/content/in-place.js';
+import { createEmptyDatabase, disableSite, enableSite, updateInPlaceSettings } from '../dist/core/store.js';
 
 test('normalizeSiteOrigin accepts bare host and full https URL', () => {
   assert.equal(normalizeSiteOrigin('chatgpt.com'), 'https://chatgpt.com');

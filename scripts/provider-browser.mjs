@@ -40,12 +40,12 @@ try {
   const read = () => page.evaluate(async () => (await chrome.storage.local.get('futurecontext.v1'))['futurecontext.v1']);
   const alarm = () => page.evaluate(() => chrome.alarms.get('futurecontext.ai-queue'));
   const patch = (value) => page.evaluate(async (input) => {
-    const store = await import(chrome.runtime.getURL('src/core/store.js'));
+    const store = await import(chrome.runtime.getURL('dist/core/store.js'));
     await store.applyDatabaseChange((latest) => store.updateAiSettings(latest, input));
   }, value);
   const seed = async (extraAssets = false) => {
     await page.evaluate(async ({ providerUrl, key, extra }) => {
-      const store = await import(chrome.runtime.getURL('src/core/store.js'));
+      const store = await import(chrome.runtime.getURL('dist/core/store.js'));
       let database = await store.setPrivacyPassword(store.createEmptyDatabase(), 'synthetic-password');
       database = store.updateAiSettings(database, { enabled: true });
       database = store.saveAsset(database, { type: 'generic', content: 'Synthetic original content.' }, { id: 'synthetic-prompt' }).database;
@@ -83,7 +83,7 @@ try {
     const running = send({ type: 'process-ai-now' });
     const first = await server.nextRequest();
     if (action === 'edit') await page.evaluate(async () => {
-      const store = await import(chrome.runtime.getURL('src/core/store.js'));
+      const store = await import(chrome.runtime.getURL('dist/core/store.js'));
       await store.applyDatabaseChange((latest) => store.saveAsset(latest, { ...latest.assets[0], content: 'Synthetic newer content.' }));
     });
     if (action === 'disable') await patch({ enabled: false });
@@ -143,7 +143,7 @@ try {
     // Exercise the packaged transport with Chrome's native fetch here; the
     // full worker's production deadline is checked separately below.
     const request = page.evaluate(async ({ baseUrl, key, origin }) => {
-      const { chatCompletion } = await import(chrome.runtime.getURL('src/features/ai/ai-organizer.js'));
+      const { chatCompletion } = await import(chrome.runtime.getURL('dist/features/ai/ai-organizer.js'));
       const loopbackFetch = (url, options) => {
         if (url !== `${baseUrl}/chat/completions`) throw new Error('Browser fixture blocked a non-test endpoint.');
         return fetch(`${origin}/v1/chat/completions`, options);

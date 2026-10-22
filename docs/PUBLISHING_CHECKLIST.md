@@ -6,7 +6,7 @@
 
 ## 打包与提交清单
 
-1. 从当前源码生成发布包，让根目录 `manifest.json` 及完整 `src/`、`icons/`、`vendor/` 保持原有层级，包含 vendor 依赖许可证。不要打包 `.git/`、`node_modules/`、测试、开发脚本、凭据或个人备份。
+1. 先运行 `npm ci` 和 `npm run build` 编译当前 TypeScript 源码。发布包保留根目录 `manifest.json`、完整 `dist/`、`src/` 下的 HTML / CSS，以及 `icons/`、`vendor/` 的原有层级和 vendor 许可证。`dist/` 是必需运行产物，不能因其被 Git 忽略而漏打包；`.ts` / `.d.ts` 与 `.map` 无需分发。不要打包 `.git/`、`node_modules/`、测试、开发脚本、凭据或个人备份。
 2. 核对版本号，运行开发指南要求的检查；在隔离的 Edge / Chrome 配置中加载仓库根目录，验收新建、草稿、复制、删除、私密库、导入导出及本次涉及的可选功能。单元或模拟测试不能代替真实服务与原生目录授权验收；记录未执行的项目。
 3. 将[隐私政策](./PRIVACY_POLICY.md)正文发布到稳定的公开 HTTPS 地址，不放入个人内容，将地址用于商店隐私政策字段。
 4. 准备长期有效的支持邮箱、分类 `Productivity`、中文及需要的英文文案、截图。截图使用临时资产，不展示私密 Prompt、Token、密码或备份。

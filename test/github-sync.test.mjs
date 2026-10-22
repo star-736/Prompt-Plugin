@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { addStructureProposal, resolveStructureProposal, createEmptyDatabase, saveAsset, createCategory, applyDatabaseChange, loadDatabase, APP_STORAGE_KEY } from '../src/core/store.js';
-import { libraryRecords, validateSyncDocument, mergeLibrary, applyLibrary, configureSync, removeSyncConfiguration, syncSettings, runLibrarySync, scheduleLibrarySync, relevantLibraryChange, SYNC_CONFIG_KEY, SYNC_STATUS_KEY, SYNC_FORMAT, SYNC_PATH } from '../src/features/github/github-sync.js';
-import { deletePackage, getPackage, listPackageIds, putPackage } from '../src/platform/package-store.js';
-import { recoverUnreferencedPackages } from '../src/features/skills/package-lifecycle.js';
+import { addStructureProposal, resolveStructureProposal, createEmptyDatabase, saveAsset, createCategory, applyDatabaseChange, loadDatabase, APP_STORAGE_KEY } from '../dist/core/store.js';
+import { libraryRecords, validateSyncDocument, mergeLibrary, applyLibrary, configureSync, removeSyncConfiguration, syncSettings, runLibrarySync, scheduleLibrarySync, relevantLibraryChange, SYNC_CONFIG_KEY, SYNC_STATUS_KEY, SYNC_FORMAT, SYNC_PATH } from '../dist/features/github/github-sync.js';
+import { deletePackage, getPackage, listPackageIds, putPackage } from '../dist/platform/package-store.js';
+import { recoverUnreferencedPackages } from '../dist/features/skills/package-lifecycle.js';
 import { createMemoryIndexedDB } from './helpers.mjs';
 
 function storageFor(database = createEmptyDatabase()) {
@@ -302,7 +302,7 @@ test('storage object key ordering does not create conflicts or prevent ordinary 
 });
 
 test('private to normal deliberate release assigns a new ID so old withdrawal stays immutable', async () => {
-  const { moveAigcAsset } = await import('../src/core/store.js');
+  const { moveAigcAsset } = await import('../dist/core/store.js');
   let database = createEmptyDatabase(); database.assets = [asset('a', 'image', 'aigc')];
   database = moveAigcAsset(database, 'a', 'private', 11);
   assert.equal(database.assets[0].id, 'a');
@@ -366,7 +366,7 @@ test('snapshot limits, read-only database and organization repositories fail clo
 });
 
 test('privacy withdrawal survives deleting private asset or releasing it with new ID before the next sync', async () => {
-  const { moveAigcAsset, removeAsset, createBackup } = await import('../src/core/store.js');
+  const { moveAigcAsset, removeAsset, createBackup } = await import('../dist/core/store.js');
   for (const releaseToNormal of [false, true]) {
     const db = createEmptyDatabase(); db.assets = [asset('a', 'ordinary', 'aigc')];
     const storage = await configured(db); const server = api();

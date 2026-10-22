@@ -10,7 +10,7 @@ import {
   parseAssetResult,
   parseGroups,
   providerOrigin
-} from '../src/features/ai/ai-organizer.js';
+} from '../dist/features/ai/ai-organizer.js';
 
 test('normalizeProvider fills presets and rejects unsafe URLs', () => {
   const openai = normalizeProvider({ kind: 'openai', model: 'gpt-4.1-mini' });

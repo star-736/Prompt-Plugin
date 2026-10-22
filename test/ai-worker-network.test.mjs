@@ -3,9 +3,9 @@ import test from 'node:test';
 import {
   APP_STORAGE_KEY, applyDatabaseChange, createEmptyDatabase, createCategory,
   saveAsset, saveDraft, setPrivacyPassword, updateAiSettings
-} from '../src/core/store.js';
-import { processAiQueue, saveProvider, clearAiSession, unlockAi, AI_ALARM } from '../src/background/ai-worker.js';
-import { AI_REQUEST_TIMEOUT_MS } from '../src/features/ai/ai-organizer.js';
+} from '../dist/core/store.js';
+import { processAiQueue, saveProvider, clearAiSession, unlockAi, AI_ALARM } from '../dist/background/ai-worker.js';
+import { AI_REQUEST_TIMEOUT_MS } from '../dist/features/ai/ai-organizer.js';
 import { createChromeStub, seedDatabase } from './helpers.mjs';
 import { createProviderServer, completion, FIXTURE_PROVIDER_URL, FIXTURE_KEY } from './fixtures/provider-server.mjs';
 

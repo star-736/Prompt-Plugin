@@ -11,10 +11,10 @@ import {
   saveAsset,
   setPrivacyPassword,
   updateAiSettings
-} from '../src/core/store.js';
+} from '../dist/core/store.js';
 import { createChromeStub, createMemoryIndexedDB, seedDatabase } from './helpers.mjs';
-import { saveGitHubToken } from '../src/features/github/github-auth.js';
-import { getPackage, putPackage } from '../src/platform/package-store.js';
+import { saveGitHubToken } from '../dist/features/github/github-auth.js';
+import { getPackage, putPackage } from '../dist/platform/package-store.js';
 
 const skill = `---\nname: Email reviewer\ndescription: Review email drafts\n---\n\n# Instructions\nReview the email.`;
 const encodedSkill = Buffer.from(skill).toString('base64');
@@ -53,7 +53,7 @@ const stub = createChromeStub({
 
 seedDatabase(stub.local, enableSites(createEmptyDatabase(), ['https://chatgpt.com']));
 
-const { NOTICE_KEY, handleRuntimeMessage, githubPageContext, PACKAGE_RECOVERY_ALARM } = await import('../src/background/background.js');
+const { NOTICE_KEY, handleRuntimeMessage, githubPageContext, PACKAGE_RECOVERY_ALARM } = await import('../dist/background/background.js');
 
 test('background recovery alarms remove abandoned packages and preserve future-version libraries', async () => {
   seedDatabase(stub.local, createEmptyDatabase());

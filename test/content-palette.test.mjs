@@ -21,7 +21,7 @@ stub = createChromeStub({
   }
 });
 
-await loadFreshEntry('../src/content/content-palette.js');
+await loadFreshEntry('../dist/content/content-palette.js');
 await waitFor(() => window.__futureContextPalette?.openFromShortcut);
 });
 afterEach(() => { window.__futureContextPalette?.destroy(); window.close(); });
@@ -271,7 +271,7 @@ test('standalone insertion restores the saved contenteditable range before writi
 afterEach(() => { assets.splice(2); });
 
 async function templateTransport({ prepare, insert } = {}) {
-  const { parsePromptTemplate } = await import('../src/core/prompt-template.js');
+  const { parsePromptTemplate } = await import('../dist/core/prompt-template.js');
   const source = '一只 {{动物}}，位于 {{场景}}。{{动物}}';
   assets.push({ id: 'template', type: 'generic', typeLabel: '通用', title: '模板', preview: source, templateEnabled: true });
   const calls = [];
@@ -338,7 +338,7 @@ test('web template // retains the trigger until filled and inserts with the expl
 
 test('web template cancellation and delayed responses cannot write after dismissal or permission revocation', async () => {
   let resolvePrepare;
-  const { parsePromptTemplate } = await import('../src/core/prompt-template.js');
+  const { parsePromptTemplate } = await import('../dist/core/prompt-template.js');
   const source = '{{动物}}';
   await templateTransport({ prepare: () => new Promise((resolve) => { resolvePrepare = resolve; }) });
   const target = field(); target.value = '保留';

@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createAssetEditor } from '../src/ui/popup/asset-editor.js';
-import { createSkillWorkspace } from '../src/ui/popup/skill-workspace.js';
-import { createEmptyDatabase } from '../src/core/store.js';
+import { createAssetEditor } from '../dist/ui/popup/asset-editor.js';
+import { createSkillWorkspace } from '../dist/ui/popup/skill-workspace.js';
+import { createEmptyDatabase } from '../dist/core/store.js';
 import { installDom, flush } from './helpers.mjs';
 
 function deferred() {

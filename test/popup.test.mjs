@@ -12,10 +12,10 @@ import {
   setSkillDeliveryTarget,
   updateAiSettings,
   updateInPlaceSettings
-} from '../src/core/store.js';
-import { createDeliveryMarker } from '../src/features/agents/agent-deliver.js';
-import { putBinding } from '../src/features/agents/agent-folders.js';
-import { SYNC_SETTINGS_DRAFT_KEY, readSyncSettingsDraft, writeSyncSettingsDraft, discardSyncSettingsDraft, submitSyncSettings } from '../src/background/sync-settings-draft.js';
+} from '../dist/core/store.js';
+import { createDeliveryMarker } from '../dist/features/agents/agent-deliver.js';
+import { putBinding } from '../dist/features/agents/agent-folders.js';
+import { SYNC_SETTINGS_DRAFT_KEY, readSyncSettingsDraft, writeSyncSettingsDraft, discardSyncSettingsDraft, submitSyncSettings } from '../dist/background/sync-settings-draft.js';
 import { click, confirmOpenDialog, createChromeStub, createMemoryDirectory, createMemoryIndexedDB, flush, installDom, loadFreshEntry, popupHtml, seedDatabase, waitFor, writeMemoryFile } from './helpers.mjs';
 
 const skill = `---\nname: Email reviewer\ndescription: Review email drafts\n---\n\n# Instructions\nReview the email.`;
@@ -147,7 +147,7 @@ if (t.name.includes('do not open the directory picker')) {
 }
 if (!t.name.startsWith('new library preset')) seedDatabase(stub.local, database);
 
-await import('../src/platform/package-store.js').then(({ putPackage }) => putPackage({
+await import('../dist/platform/package-store.js').then(({ putPackage }) => putPackage({
   id: 'pkg-1',
   files: [
     { path: 'SKILL.md', content: Buffer.from(skill).toString('base64'), size: 20, contentType: 'text/plain' },
@@ -157,7 +157,7 @@ await import('../src/platform/package-store.js').then(({ putPackage }) => putPac
   totalSize: 32
 }, indexedDb));
 
-await loadFreshEntry('../src/ui/popup/popup.js');
+await loadFreshEntry('../dist/ui/popup/popup.js');
 await waitFor(() => document.querySelector('.tabs'));
 });
 afterEach(() => {
@@ -1172,7 +1172,7 @@ test('sync settings draft survives closing and reopening the popup without apply
   window.close();
   stub.listeners.storageChanged.length = 0;
   ({ window, document } = installDom(popupHtml()));
-  await loadFreshEntry('../src/ui/popup/popup.js');
+  await loadFreshEntry('../dist/ui/popup/popup.js');
   await waitFor(() => document.querySelector('#library-sync-form'));
   form = document.querySelector('#library-sync-form');
   assert.equal(form.querySelector('[name=repository]').value, 'star-736/futurecontext-library');
@@ -1232,7 +1232,7 @@ test('opening settings in a new tab preserves the settings view and draft withou
   assert.equal((await readSyncSettingsDraft()).token, 'github_pat_tab_draft');
   window.close(); stub.listeners.storageChanged.length = 0;
   ({ window, document } = installDom(popupHtml(), { url: 'https://example.com/popup.html?mode=tab&view=settings' }));
-  await loadFreshEntry('../src/ui/popup/popup.js');
+  await loadFreshEntry('../dist/ui/popup/popup.js');
   await waitFor(() => document.querySelector('#library-sync-form'));
   assert.equal(document.querySelector('#library-sync-form [name=repository]').value, 'copy/paste');
   assert.equal(document.querySelector('#library-sync-form [name=token]').value, 'github_pat_tab_draft');
